@@ -8,6 +8,7 @@ from pprint import pprint
 import datetime
 import logging
 import urllib.parse
+from urllib.parse import urlparse
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -18,6 +19,7 @@ from PIL import Image
 import time
 import re
 import os
+import cv2
 import unicodedata
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
@@ -47,14 +49,14 @@ local_url= local_domain +"/api/v0/"
 
 # Global variables for thread control
 calculation_thread = None
-update_time_interval=10
+update_time_interval=5
 last_run = datetime.datetime.now() - datetime.timedelta(minutes=6)
 notify_user_list={}
 post_id_list=[]
 if REMOTE_API:
     HAS_LOCAL_NODE_WITHOUT_INDEXING= False
     HAS_LOCAL_NODE_WITH_INDEXING = False
-    update_time_interval=30
+    update_time_interval=60
 
 else:
     if HAS_LOCAL_NODE_WITHOUT_INDEXING:
@@ -192,7 +194,7 @@ if bot_username is None:
     print("Error,bot username can not get. exit")
     exit()
 
-def get_posts_stateless(ReaderPublicKeyBase58Check,NumToFetch=50):
+def get_posts_stateless(ReaderPublicKeyBase58Check,NumToFetch=50,PostHashHex=""):
     payload = {
         "AddGlobalFeedBool":True,
         "FetchSubcomments":False,
@@ -203,7 +205,7 @@ def get_posts_stateless(ReaderPublicKeyBase58Check,NumToFetch=50):
         "NumToFetch":NumToFetch,
         "OrderBy":"newest",
         "PostContent":"",
-        "PostHashHex":"",
+        "PostHashHex":PostHashHex,
         "PostsByDESOMinutesLookback":0,
         "ReaderPublicKeyBase58Check":ReaderPublicKeyBase58Check,
         "StartTstampSecs":None
@@ -222,7 +224,7 @@ def categorize_image_with_confidence(image_path: str,text:str):
         "- output ONLY valid JSON\n"
         "- no extra text\n\n"
         "Format exactly:\n"
-        "{\"category\":\"nature\",\"subcategory\":\"animals\",\"confidence\":60}"
+        "{\"category\":\"abstract\",\"subcategory\":\"text\",\"confidence\":60}"
 
     )
     print(prompt)
@@ -248,7 +250,11 @@ def categorize_image_with_confidence(image_path: str,text:str):
         confidence = int(data["confidence"])
 
         if category not in ALLOWED:
-            raise ValueError("Invalid category")
+            category = "abstract"
+            #raise ValueError("Invalid category")
+        if subcategory not in ALLOWED:
+            subcategory = "abstract"
+            #raise ValueError("Invalid category")
 
         confidence = max(0, min(confidence, 100))
         return category,subcategory, confidence
@@ -259,60 +265,83 @@ def categorize_image_with_confidence(image_path: str,text:str):
         return "abstract", "abstract",0
 
 def extract_image_from_video_advance(url):
-    options = Options()
-    options.add_argument("--autoplay-policy=no-user-gesture-required")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-notifications")
-    options.add_argument("--headless=new")
-    options.add_argument("--incognito")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-popup-blocking")
-    #options.add_argument("--user-data-dir=%TEMP%\\selenium_profile")
-    prefs = {
-        "download.default_directory": "NUL",
-        "download.prompt_for_download": False,
-        "safebrowsing.enabled": True
-    }
-    options.add_experimental_option("prefs", prefs)
-    driver = webdriver.Chrome(options=options)
-    driver.set_window_size(1280, 720)
-    driver.get(url)
+    try:
+        options = Options()
+        options.add_argument("--autoplay-policy=no-user-gesture-required")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--headless=new")
+        options.add_argument("--incognito")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-popup-blocking")
+        #options.add_argument("--user-data-dir=%TEMP%\\selenium_profile")
+        prefs = {
+            "download.default_directory": "NUL",
+            "download.prompt_for_download": False,
+            "safebrowsing.enabled": True
+        }
+        options.add_experimental_option("prefs", prefs)
+        driver = webdriver.Chrome(options=options)
+        driver.set_window_size(1280, 720)
+        driver.get(url)
 
-    wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 20)
 
-    # Wait for the video element to appear
-    video = wait.until(
-        EC.presence_of_element_located((By.TAG_NAME, "video"))
-    )
+        # Wait for the video element to appear
+        video = wait.until(
+            EC.presence_of_element_located((By.TAG_NAME, "video"))
+        )
 
-    # Scroll video into view
-    driver.execute_script("arguments[0].scrollIntoView(true);", video)
+        # Scroll video into view
+        driver.execute_script("arguments[0].scrollIntoView(true);", video)
 
-    # Give the video time to load a frame
-    time.sleep(3)
+        # Give the video time to load a frame
+        time.sleep(3)
 
-    # Take full-page screenshot
-    driver.save_screenshot("page.png")
+        # Take full-page screenshot
+        driver.save_screenshot("page.png")
 
-    # Crop only the video area
-    location = video.location
-    size = video.size
+        # Crop only the video area
+        location = video.location
+        size = video.size
 
-    image = Image.open("page.png")
+        image = Image.open("page.png")
 
-    left = location["x"]
-    top = location["y"]
-    right = left + size["width"]
-    bottom = top + size["height"]
+        left = location["x"]
+        top = location["y"]
+        right = left + size["width"]
+        bottom = top + size["height"]
 
-    video_frame = image.crop((left, top, right, bottom))
-    filename = "video_frame.jpg"
-    video_frame.save(filename)
+        video_frame = image.crop((left, top, right, bottom))
+        filename = "video_frame.jpg"
+        video_frame.save(filename)
 
-    print("Saved " + filename)
+        print("Saved " + filename)
+        
+        driver.quit()
+        return filename
+    except Exception as e:
+        print(f"Error extracting image from video: {e}")
+        return None
     
-    driver.quit()
-    return filename
+def grab_frame_opencv(video_url):
+    try:
+        print("Using OpenCV")
+        cap = cv2.VideoCapture(video_url)
+        cap.set(cv2.CAP_PROP_POS_MSEC, 1000)  # 1s
+
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret:
+            raise RuntimeError("Failed to read frame from video")
+        filename = "video_frame.jpg"
+        cv2.imwrite(filename, frame)
+        print("Saved:", filename)
+        return filename
+    except Exception as e:
+        print(f"Error grabbing frame with OpenCV: {e}")
+        return None
 
 def extract_image_url(info_string):
     parsed_url = urllib.parse.urlparse(info_string)
@@ -437,7 +466,18 @@ def clean_text(text):
         c for c in text
         if c.isprintable() or c in "\n\t"
     )
+
+def is_html(url):
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=10)
+        content_type = r.headers.get("Content-Type", "")
+        return "text/html" in content_type
+    except:
+        return False
     
+def is_gif_by_extension(url):
+    return urlparse(url).path.lower().endswith(".gif")
+
 def run():
     global notify_user_list,post_id_list
 
@@ -450,6 +490,9 @@ def run():
     last_run_report = datetime.datetime.now()# - datetime.timedelta(hours=12)
     stats_video={}
     stats={}
+    last_post=""
+    crashes_count=0
+    post = None
     while(True):
         try:
             
@@ -465,14 +508,16 @@ def run():
                 post_id_list=result["post_ids"]
             if result:=load_from_json("notify_user_list.json"):
                 notify_user_list=result
-
+            
             while(True):
                 notificationListener()
                 logging.debug("Checking feed")
-                if results:=get_posts_stateless(bot_public_key,NumToFetch=20):
+                logging.info(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
+                if results:=get_posts_stateless(bot_public_key,NumToFetch=25):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
                     
                     for post in results["PostsFound"]:
-                        logging.debug(post["TimestampNanos"])
+                        last_post = post
+                        logging.info( f'Timestamp:{post["TimestampNanos"]}' )
                         nano_ts=post["TimestampNanos"]
                         if nano_ts > max_nano_ts:
                             max_nano_ts = nano_ts
@@ -483,8 +528,7 @@ def run():
                             ts=nano_ts/1e9
                             dt=datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
                             
-                            post_id_list_feed.append(post["PostHashHex"])
-                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                            
                             posts_count+=1
                             post_username=post['ProfileEntryResponse']['Username'] if post['ProfileEntryResponse']['Username'] is not None else "unknown"
                             post_body = unicodedata.normalize("NFKC", post["Body"])
@@ -503,18 +547,46 @@ def run():
                                 video_url=post["VideoURLs"][0]
                                 logging.info(f"Video URL:{video_url}")
                                 if video_url!="":
-                                    image_file_name= extract_image_from_video_advance(video_url)
+                                    image_file_name=None
+                                    retry_count=0
+                                    if is_html(video_url):
+                                        logging.info("Video URL is HTML")
+                                        while image_file_name is None and retry_count<=2:
+                                            image_file_name= extract_image_from_video_advance(video_url)
+                                            if image_file_name is None:
+                                                retry_count+=1
+                                                time.sleep(5)
+                                                if retry_count>2:
+                                                    logging.info("Skipping video post after 3 failed attempts.")
+                                                    logging.info("Failed to extract middle frame from video. Skipping post.")
+                                    else:
+                                        logging.info("Video URL is not HTML")
+                                        while image_file_name is None and retry_count<=2:
+                                            image_file_name= grab_frame_opencv(video_url)
+                                            if image_file_name is None:
+                                                retry_count+=1
+                                                time.sleep(5)
+                                                if retry_count>2:
+                                                    logging.info("Skipping video post after 3 failed attempts.")
+                                                    logging.info("Failed to extract middle frame from video. Skipping post.")
+
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                     if image_file_name is None:
-                                        logging.info("Failed to extract middle frame from video. Skipping post.")
-                                        continue         
+                                        logging.info("Skipping post due to failed video extraction.")
+                                        continue
+                                    logging.info(f"Extracted image file from video: {image_file_name}")     
                                     
                                     category,sub, confidence = categorize_image_with_confidence(image_file_name,post_body)
+
                                     stats_video[category]=stats_video.get(category,0)+1
                                     if(category != sub):
                                         stats_video[sub]=stats_video.get(sub,0)+1
 
                                     save_to_json(stats_video,"stats_video.json")
+
                                     logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
+
 
                                     reply_body=f"categories: #{category} #{sub}"
                                     create_post(reply_body,post["PostHashHex"],[category,sub])
@@ -542,6 +614,12 @@ def run():
                             if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
                                 image_url=post["ImageURLs"][0]
                                 logging.info(f"Image URL:{image_url}")
+                                if is_gif_by_extension(image_url):
+                                    logging.info("Image is GIF")
+                                    if(post["PostHashHex"] not in post_id_list_feed):
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                    continue
                                 image_file_name= extract_image_url(image_url)
                                 print(image_file_name)
                                 image_save_path = img_path / image_file_name
@@ -555,12 +633,18 @@ def run():
                                     logging.info("Image already exists. Skipping download.")                              
 
                                 category,sub, confidence = categorize_image_with_confidence(image_save_path,post_body)
+
+                                if(post["PostHashHex"] not in post_id_list_feed):
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                
                                 stats[category]=stats.get(category,0)+1
                                 if(category != sub):
                                     stats[sub]=stats.get(sub,0)+1
 
                                 save_to_json(stats,"stats.json")
                                 logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
+
                                 reply_body=f"categories: #{category} #{sub}"
                                 create_post(reply_body,post["PostHashHex"],[category,sub])
                                 create_quote_post(reply_body,post["PostHashHex"],[category,sub])
@@ -585,6 +669,10 @@ def run():
                                 print(stats)
                                 
                                 logging.info("==============================")
+
+                            if(post["PostHashHex"] not in post_id_list_feed):
+                                post_id_list_feed.append(post["PostHashHex"])
+                                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                     if max_nano_ts>last_nano_tx:
                         last_nano_tx=max_nano_ts
                 
@@ -613,6 +701,12 @@ def run():
 
                 time.sleep(update_time_interval)
         except Exception as e:
+            crashes_count+=1
+            logging.error(f"Crash count: {crashes_count}")
+            if crashes_count>=5:
+                logging.error("Too many crashes, exiting.")
+                break
+                
             logging.error(e)
             time.sleep(1)
 
