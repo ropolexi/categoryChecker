@@ -18,7 +18,7 @@ from PIL import Image
 import time
 import re
 import os
-
+import unicodedata
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
@@ -74,7 +74,7 @@ client = DeSoDexClient(
     node_url=BASE_URL if REMOTE_API else local_domain
 )
 
-ALLOWED = {"people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","mature","nsfw"}
+ALLOWED = {"people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","girls","nsfw"}
 ALLOWED_TYPES = {"image", "video"}
 
 def save_to_json(data, filename):
@@ -125,7 +125,33 @@ def api_get(endpoint, payload=None):
         print(f"API Error: {e}")
         return None
 
-def create_post(body,parent_post_hash_hex,category=""):
+def create_quote_post(body,parent_post_hash_hex,category=[]):
+    logging.info("\n---- Submit Post ----")
+    try:
+        logging.info('Constructing submit-post txn...')
+        post_response = client.submit_post(
+            updater_public_key_base58check=bot_public_key,
+            body=body,
+            reposted_post_hash_hex=parent_post_hash_hex,
+            title="",
+            image_urls=[],
+            video_urls=[],
+            post_extra_data={"Node": "1","is_bot":"true","categories":json.dumps(category)},
+            min_fee_rate_nanos_per_kb=1000,
+            is_hidden=False,
+            in_tutorial=False
+        )
+        logging.info('Signing and submitting txn...')
+        submitted_txn_response = client.sign_and_submit_txn(post_response)
+        txn_hash = submitted_txn_response['TxnHashHex']
+        
+        logging.info('SUCCESS!')
+        return 1
+    except Exception as e:
+        logging.error(f"ERROR: Submit post call failed: {e}")
+        return 0
+    
+def create_post(body,parent_post_hash_hex,category=[]):
     logging.info("\n---- Submit Post ----")
     try:
         logging.info('Constructing submit-post txn...')
@@ -136,7 +162,7 @@ def create_post(body,parent_post_hash_hex,category=""):
             title="",
             image_urls=[],
             video_urls=[],
-            post_extra_data={"Node": "1","is_bot":"true","category":category},
+            post_extra_data={"Node": "1","is_bot":"true","categories":json.dumps(category)},
             min_fee_rate_nanos_per_kb=1000,
             is_hidden=False,
             in_tutorial=False
@@ -185,18 +211,19 @@ def get_posts_stateless(ReaderPublicKeyBase58Check,NumToFetch=50):
     data = api_get("get-posts-stateless", payload)
     return data  
 
-
-def categorize_image_with_confidence(image_path: str):
+def categorize_image_with_confidence(image_path: str,text:str):
     allowed_str=", ".join(ALLOWED)
     prompt = (
-        "Classify the image.\n"
+        "Classify the image.\n\n"
+        "Image description or user text regarding the image: <<<"+text+">>>\n\n"
         "Rules:\n"
-        "- category must be one of: " + allowed_str + "\n"
+        "- category and subcategory must be one of: " + allowed_str + "\n"
         "- confidence must be an integer from 0 to 100\n"
         "- output ONLY valid JSON\n"
         "- no extra text\n\n"
         "Format exactly:\n"
-        "{\"category\":\"nature\",\"confidence\":60}"
+        "{\"category\":\"nature\",\"subcategory\":\"animals\",\"confidence\":60}"
+
     )
     print(prompt)
 
@@ -217,18 +244,19 @@ def categorize_image_with_confidence(image_path: str):
     try:
         data = json.loads(response["message"]["content"])
         category = data["category"]
+        subcategory = data["subcategory"]
         confidence = int(data["confidence"])
 
         if category not in ALLOWED:
             raise ValueError("Invalid category")
 
         confidence = max(0, min(confidence, 100))
-        return category, confidence
+        return category,subcategory, confidence
 
     except Exception:
         # absolute fallback
         print(response["message"]["content"])
-        return "abstract", 0
+        return "abstract", "abstract",0
 
 def extract_image_from_video_advance(url):
     options = Options()
@@ -404,6 +432,11 @@ def notificationListener():
                             break
 
        
+def clean_text(text):
+    return "".join(
+        c for c in text
+        if c.isprintable() or c in "\n\t"
+    )
     
 def run():
     global notify_user_list,post_id_list
@@ -454,12 +487,15 @@ def run():
                             save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                             posts_count+=1
                             post_username=post['ProfileEntryResponse']['Username'] if post['ProfileEntryResponse']['Username'] is not None else "unknown"
+                            post_body = unicodedata.normalize("NFKC", post["Body"])
+                            post_body = post_body[:200] + "..." if len(post_body) > 200 else post_body
+                            post_body=clean_text(post_body)
                             logging.info(f"\n---- New Post #{posts_count} ----")
                             logging.info(f"UTC Time:{dt}")
                             logging.info(f"Username:{post_username}")
                             logging.info(f'PublicKeyBase58Check:{post['ProfileEntryResponse']["PublicKeyBase58Check"]}')
                             logging.info("=============Body==============")
-                            logging.info(post["Body"])
+                            logging.info(post_body)
                             logging.info("===============END=============")
 
                           
@@ -472,16 +508,23 @@ def run():
                                         logging.info("Failed to extract middle frame from video. Skipping post.")
                                         continue         
                                     
-                                    category, confidence = categorize_image_with_confidence(image_file_name)
+                                    category,sub, confidence = categorize_image_with_confidence(image_file_name,post_body)
                                     stats_video[category]=stats_video.get(category,0)+1
+                                    if(category != sub):
+                                        stats_video[sub]=stats_video.get(sub,0)+1
+
                                     save_to_json(stats_video,"stats_video.json")
-                                    logging.info(f"category: {category}, confidence: {confidence}%")
-                                    reply_body=f"category: #{category} , confidence: {confidence}%"
-                                    create_post(reply_body,post["PostHashHex"],category)
+                                    logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
+
+                                    reply_body=f"categories: #{category} #{sub}"
+                                    create_post(reply_body,post["PostHashHex"],[category,sub])
+                                    create_quote_post(reply_body,post["PostHashHex"],[category,sub])
                                     users_list=[]
-                                    if "video" in notify_user_list:
-                                        if category in notify_user_list["video"]:
-                                            users_list=notify_user_list["video"][category] 
+                                    users_list = list(
+                                        set(notify_user_list.get("video", {}).get(category, [])) |
+                                        set(notify_user_list.get("video", {}).get(sub, []))
+                                    )
+
                                     usernames_str=""
                                     for user_public_key in users_list:
                                         user = get_single_profile("",user_public_key)
@@ -491,7 +534,7 @@ def run():
                                                     if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
                                                             usernames_str += "@"+user["Profile"]["Username"]+" "  
                                     if usernames_str!="":
-                                        create_post(f"{usernames_str} Check out your interested video post by {post_username}, category: {category}",post["PostHashHex"])        
+                                        create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
                                     print(stats_video)
                                     
                                     logging.info("==============================")
@@ -510,17 +553,22 @@ def run():
                                         handler.write(image_data)
                                 else:
                                     logging.info("Image already exists. Skipping download.")                              
-                                
-                                category, confidence = categorize_image_with_confidence(image_save_path)
+
+                                category,sub, confidence = categorize_image_with_confidence(image_save_path,post_body)
                                 stats[category]=stats.get(category,0)+1
+                                if(category != sub):
+                                    stats[sub]=stats.get(sub,0)+1
+
                                 save_to_json(stats,"stats.json")
-                                logging.info(f"category: {category}, confidence: {confidence}%")
-                                reply_body=f"category: #{category} , confidence: {confidence}%"
-                                create_post(reply_body,post["PostHashHex"],category)
+                                logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
+                                reply_body=f"categories: #{category} #{sub}"
+                                create_post(reply_body,post["PostHashHex"],[category,sub])
+                                create_quote_post(reply_body,post["PostHashHex"],[category,sub])
                                 users_list=[]
-                                if "image" in notify_user_list:
-                                    if category in notify_user_list["image"]:
-                                        users_list=notify_user_list["image"][category]
+                                users_list = list(
+                                    set(notify_user_list.get("image", {}).get(category, [])) |
+                                    set(notify_user_list.get("image", {}).get(sub, []))
+                                )
 
                                 usernames_str=""
 
@@ -532,7 +580,7 @@ def run():
                                                 if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
                                                     usernames_str += "@"+user["Profile"]["Username"]+" "  
                                 if usernames_str!="":
-                                    create_post(f"{usernames_str} Check out your interested image post by {post_username}, category: {category}",post["PostHashHex"])      
+                                    create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
 
                                 print(stats)
                                 
