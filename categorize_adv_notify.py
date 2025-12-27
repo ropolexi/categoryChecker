@@ -22,7 +22,18 @@ import os
 import cv2
 import unicodedata
 
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
+# Configure logging with timestamp
+logging.basicConfig(
+    filename='categorize_app.log',
+    format='%(asctime)s - %(levelname)s: %(message)s',
+    level=logging.INFO,
+    datefmt='%Y-%m-%d %H:%M:%S'  # Optional: customize the timestamp format
+)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
+console_handler.setFormatter(formatter)
+logging.getLogger().addHandler(console_handler)
 
 seed_phrase_or_hex="" #dont share this
 # seed_phrase_or_hex = os.environ.get("SEED_PHRASE")
@@ -75,7 +86,7 @@ client = DeSoDexClient(
     passphrase="",
     node_url=BASE_URL if REMOTE_API else local_domain
 )
-
+VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark"}
 ALLOWED = {"people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","girls","nsfw"}
 ALLOWED_TYPES = {"image", "video"}
 
@@ -83,26 +94,26 @@ def save_to_json(data, filename):
   try:
     with open(filename, 'w') as f:  # 'w' mode: write (overwrites existing file)
       json.dump(data, f, indent=4)  # indent for pretty formatting
-    print(f"Data saved to {filename}")
+    logging.info(f"Data saved to {filename}")
   except TypeError as e:
-    print(f"Error: Data is not JSON serializable: {e}")
+    logging.error(f"Error: Data is not JSON serializable: {e}")
   except Exception as e:
-    print(f"Error saving to file: {e}")
+    logging.error(f"Error saving to file: {e}")
 
 def load_from_json(filename):
   try:
     with open(filename, 'r') as f:  # 'r' mode: read
       data = json.load(f)
-    print(f"Data loaded from {filename}")
+    logging.info(f"Data loaded from {filename}")
     return data
   except FileNotFoundError:
-    print(f"Error: File not found: {filename}")
+    logging.error(f"Error: File not found: {filename}")
     return None  # Important: Return None if file not found
   except json.JSONDecodeError as e:
-    print(f"Error decoding JSON in {filename}: {e}")
+    logging.error(f"Error decoding JSON in {filename}: {e}")
     return None # Important: Return None if JSON is invalid
   except Exception as e:
-    print(f"Error loading from file: {e}")
+    logging.error(f"Error loading from file: {e}")
     return None
   
 
@@ -113,9 +124,9 @@ def api_get(endpoint, payload=None):
         else:
             if HAS_LOCAL_NODE_WITHOUT_INDEXING:
                 if endpoint=="get-notifications":
-                    print("---Using remote node---")
+                    logging.debug("---Using remote node---")
                     response = requests.post(api_url + endpoint, json=payload)
-                    print("--------End------------")
+                    logging.debug("--------End------------")
                 else:
                     response = requests.post(local_url + endpoint, json=payload)
             if HAS_LOCAL_NODE_WITH_INDEXING:
@@ -124,7 +135,7 @@ def api_get(endpoint, payload=None):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"API Error: {e}")
+        logging.error(f"API Error: {e}")
         return None
 
 def create_quote_post(body,parent_post_hash_hex,category=[]):
@@ -146,7 +157,7 @@ def create_quote_post(body,parent_post_hash_hex,category=[]):
         logging.info('Signing and submitting txn...')
         submitted_txn_response = client.sign_and_submit_txn(post_response)
         txn_hash = submitted_txn_response['TxnHashHex']
-        
+        logging.debug(f"Txn Hash: {txn_hash}")
         logging.info('SUCCESS!')
         return 1
     except Exception as e:
@@ -172,7 +183,7 @@ def create_post(body,parent_post_hash_hex,category=[]):
         logging.info('Signing and submitting txn...')
         submitted_txn_response = client.sign_and_submit_txn(post_response)
         txn_hash = submitted_txn_response['TxnHashHex']
-        
+        logging.debug(f"Txn Hash: {txn_hash}")
         logging.info('SUCCESS!')
         return 1
     except Exception as e:
@@ -191,7 +202,7 @@ def get_single_profile(Username,PublicKeyBase58Check=""):
 bot_public_key = base58_check_encode(client.deso_keypair.public_key, False)
 bot_username = get_single_profile("",bot_public_key)["Profile"]["Username"]
 if bot_username is None:
-    print("Error,bot username can not get. exit")
+    logging.error("Error,bot username can not get. exit")
     exit()
 
 def get_posts_stateless(ReaderPublicKeyBase58Check,NumToFetch=50,PostHashHex=""):
@@ -227,7 +238,7 @@ def categorize_image_with_confidence(image_path: str,text:str):
         "{\"category\":\"abstract\",\"subcategory\":\"text\",\"confidence\":60}"
 
     )
-    print(prompt)
+    logging.debug(prompt)
 
     response = ollama.chat(
         model=model_name,
@@ -261,8 +272,56 @@ def categorize_image_with_confidence(image_path: str,text:str):
 
     except Exception:
         # absolute fallback
-        print(response["message"]["content"])
+        logging.error(response["message"]["content"])
         return "abstract", "abstract",0
+
+def spam_detect(username:str,body:str):
+    prompt = (
+        "detect spam and fake accounts pretending to be DeSocialWorld or Focus.\n"
+        "Fake accounts often spell the username slightly wrong or use special characters to trick users. They may also post misleading content or links.\n"
+        "content contains loyalty and rewards, promotional offers, or advertisements that are not relevant to official DeSocialWorld or Focus.\n\n"
+        "If there are loyalty rewards, promotional offers, or advertisements in the content, classify it as spam.\n"
+        "If the username is similar to DeSocialWorld or Focus then they are spam\n"
+        "This is not spam do not label as spam if the content has something like this 🙏Congrats and thanks to all holders! Want to reward your NFT holders too? Start using nftz.me now.\n\n"
+        "username: <<<"+username+">>>\n\n"
+        "content: <<<"+body+">>>\n\n"
+        "Rules:\n"
+        "- output ONLY valid JSON\n"
+        "- no extra text\n\n"
+        "Format exactly:\n"
+        "{\"spam\":\"No\"}"
+
+    )
+    logging.debug(prompt)
+    try:
+        response = ollama.chat(
+            model=model_name,
+            messages=[{
+                "role": "user",
+                "content": prompt
+            }],
+            format="json",
+            options={
+                "temperature": 0,
+                "format": "json"
+            }
+        )
+
+        data = json.loads(response["message"]["content"])
+        spam_detect = data["spam"]
+       
+        if spam_detect not in {"Yes","No"}:
+            spam_detect = "No"
+
+        if username in VALID_USERS:
+            spam_detect = "No"
+        
+        return spam_detect
+
+    except Exception:
+        # absolute fallback
+        logging.error(response["message"]["content"])
+        return "No"
 
 def extract_image_from_video_advance(url):
     try:
@@ -316,17 +375,17 @@ def extract_image_from_video_advance(url):
         filename = "video_frame.jpg"
         video_frame.save(filename)
 
-        print("Saved " + filename)
+        logging.debug("Saved " + filename)
         
         driver.quit()
         return filename
     except Exception as e:
-        print(f"Error extracting image from video: {e}")
+        logging.error(f"Error extracting image from video: {e}")
         return None
     
 def grab_frame_opencv(video_url):
     try:
-        print("Using OpenCV")
+        logging.debug("Using OpenCV")
         cap = cv2.VideoCapture(video_url)
         cap.set(cv2.CAP_PROP_POS_MSEC, 1000)  # 1s
 
@@ -337,10 +396,10 @@ def grab_frame_opencv(video_url):
             raise RuntimeError("Failed to read frame from video")
         filename = "video_frame.jpg"
         cv2.imwrite(filename, frame)
-        print("Saved:", filename)
+        logging.debug("Saved:", filename)
         return filename
     except Exception as e:
-        print(f"Error grabbing frame with OpenCV: {e}")
+        logging.error(f"Error grabbing frame with OpenCV: {e}")
         return None
 
 def extract_image_url(info_string):
@@ -399,7 +458,7 @@ def notificationListener():
     profile=get_single_profile("",bot_public_key)
  
     now = datetime.datetime.now() 
-    logging.info(now)
+    logging.debug(now)
     if now - last_run >= datetime.timedelta(minutes=2):
         last_run = now  
         logging.info("Checking notifications")
@@ -459,6 +518,7 @@ def notificationListener():
                                                 create_post(f"@{username} You will NOT be notified for {category_type} category: {category}.",postId)
 
                             break
+        logging.info("Checked notifications done.")
 
        
 def clean_text(text):
@@ -478,6 +538,34 @@ def is_html(url):
 def is_gif_by_extension(url):
     return urlparse(url).path.lower().endswith(".gif")
 
+TXID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+def is_arweave_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and parsed.netloc.endswith("arweave.net")
+
+def extract_arweave_txid(url: str):
+    """
+    Returns txid ONLY if the URL is confirmed to be Arweave.
+    Otherwise returns None.
+    """
+    if not is_arweave_url(url):
+        return None
+
+    parsed = urlparse(url)
+    path = parsed.path.lstrip("/")
+
+    # Must have a path
+    if not path:
+        return None
+
+    txid = path.split("/")[0]
+
+    # Validate txid format
+    if TXID_PATTERN.fullmatch(txid):
+        return txid
+
+    return None
 def run():
     global notify_user_list,post_id_list
 
@@ -493,8 +581,11 @@ def run():
     last_post=""
     crashes_count=0
     post = None
+    spam_list=[]
     while(True):
         try:
+            if result:=load_from_json("spam_list.json"):
+                spam_list=result
             
 
             if result:=load_from_json("postIdList_LIKE.json"):
@@ -512,12 +603,12 @@ def run():
             while(True):
                 notificationListener()
                 logging.debug("Checking feed")
-                logging.info(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
+                logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
                 if results:=get_posts_stateless(bot_public_key,NumToFetch=25):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
                     
                     for post in results["PostsFound"]:
                         last_post = post
-                        logging.info( f'Timestamp:{post["TimestampNanos"]}' )
+                        logging.debug( f'Timestamp:{post["TimestampNanos"]}' )
                         nano_ts=post["TimestampNanos"]
                         if nano_ts > max_nano_ts:
                             max_nano_ts = nano_ts
@@ -535,12 +626,29 @@ def run():
                             post_body = post_body[:200] + "..." if len(post_body) > 200 else post_body
                             post_body=clean_text(post_body)
                             logging.info(f"\n---- New Post #{posts_count} ----")
-                            logging.info(f"UTC Time:{dt}")
+                            logging.info(f"Post Hash:{post['PostHashHex']}")
+                            logging.debug(f"UTC Time:{dt}")
                             logging.info(f"Username:{post_username}")
                             logging.info(f'PublicKeyBase58Check:{post['ProfileEntryResponse']["PublicKeyBase58Check"]}')
                             logging.info("=============Body==============")
                             logging.info(post_body)
                             logging.info("===============END=============")
+                            if post['ProfileEntryResponse']["PublicKeyBase58Check"] == bot_public_key:
+                                logging.info("Skipping own post.")
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
+                            spam = spam_detect(post_username,post_body)
+                            logging.info(f"Spam detect: {spam}")
+                            if spam=="Yes":
+                                logging.info("Skipping spam post.")
+                                if post['ProfileEntryResponse']["PublicKeyBase58Check"] not in spam_list:
+                                    spam_list.append(post['ProfileEntryResponse']["PublicKeyBase58Check"])
+                                    save_to_json(spam_list,"spam_list.json")
+                                post_id_list_feed.append(post["PostHashHex"])
+                                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
 
                           
                             if post["VideoURLs"]!=None and len(post["VideoURLs"])>0:
@@ -567,13 +675,13 @@ def run():
                                                 retry_count+=1
                                                 time.sleep(5)
                                                 if retry_count>2:
-                                                    logging.info("Skipping video post after 3 failed attempts.")
-                                                    logging.info("Failed to extract middle frame from video. Skipping post.")
+                                                    logging.error("Skipping video post after 3 failed attempts.")
+                                                    logging.error("Failed to extract middle frame from video. Skipping post.")
 
                                     post_id_list_feed.append(post["PostHashHex"])
                                     save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                     if image_file_name is None:
-                                        logging.info("Skipping post due to failed video extraction.")
+                                        logging.error("Skipping post due to failed video extraction.")
                                         continue
                                     logging.info(f"Extracted image file from video: {image_file_name}")     
                                     
@@ -589,7 +697,7 @@ def run():
 
 
                                     reply_body=f"categories: #{category} #{sub}"
-                                    create_post(reply_body,post["PostHashHex"],[category,sub])
+                                    #create_post(reply_body,post["PostHashHex"],[category,sub])
                                     create_quote_post(reply_body,post["PostHashHex"],[category,sub])
                                     users_list=[]
                                     users_list = list(
@@ -607,21 +715,34 @@ def run():
                                                             usernames_str += "@"+user["Profile"]["Username"]+" "  
                                     if usernames_str!="":
                                         create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
-                                    print(stats_video)
+                                    logging.debug(stats_video)
                                     
                                     logging.info("==============================")
 
                             if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
                                 image_url=post["ImageURLs"][0]
                                 logging.info(f"Image URL:{image_url}")
+
                                 if is_gif_by_extension(image_url):
                                     logging.info("Image is GIF")
                                     if(post["PostHashHex"] not in post_id_list_feed):
                                         post_id_list_feed.append(post["PostHashHex"])
                                         save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                     continue
+
+                                if is_arweave_url(image_url):
+                                    arweave_txid = extract_arweave_txid(image_url)
+                                    if arweave_txid:
+                                        image_url = f"https://arweave.net/{arweave_txid}"
+                                        logging.info(f"Extracted Arweave URL: {image_url}")
+                                    else:
+                                        logging.info("Invalid Arweave URL.")
+                                        if(post["PostHashHex"] not in post_id_list_feed):
+                                            post_id_list_feed.append(post["PostHashHex"])
+                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                        continue
                                 image_file_name= extract_image_url(image_url)
-                                print(image_file_name)
+                                logging.debug(image_file_name)
                                 image_save_path = img_path / image_file_name
 
                                 if not image_save_path.exists():
@@ -646,7 +767,7 @@ def run():
                                 logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
 
                                 reply_body=f"categories: #{category} #{sub}"
-                                create_post(reply_body,post["PostHashHex"],[category,sub])
+                                #create_post(reply_body,post["PostHashHex"],[category,sub])
                                 create_quote_post(reply_body,post["PostHashHex"],[category,sub])
                                 users_list=[]
                                 users_list = list(
@@ -666,7 +787,7 @@ def run():
                                 if usernames_str!="":
                                     create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
 
-                                print(stats)
+                                logging.debug(stats)
                                 
                                 logging.info("==============================")
 
@@ -689,7 +810,7 @@ def run():
                 for key, value in sorted_stats_video:  # This is the crucial change: tuple unpacking
                     info_body += f"* {key}: {value}\n"
                 info_body += f"Total videos processed: {sum(stats_video.values())}\n"
-                print(info_body)
+                logging.debug(info_body)
     
                 now = datetime.datetime.now()
     
