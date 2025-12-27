@@ -60,7 +60,7 @@ local_url= local_domain +"/api/v0/"
 
 # Global variables for thread control
 calculation_thread = None
-update_time_interval=5
+update_time_interval=1
 last_run = datetime.datetime.now() - datetime.timedelta(minutes=6)
 notify_user_list={}
 post_id_list=[]
@@ -534,7 +534,11 @@ def is_html(url):
         return "text/html" in content_type
     except:
         return False
-    
+def is_gif(path):
+    with open(path, "rb") as f:
+        header = f.read(6)
+    return header in (b"GIF87a", b"GIF89a")
+
 def is_gif_by_extension(url):
     return urlparse(url).path.lower().endswith(".gif")
 
@@ -607,6 +611,7 @@ def run():
                 if results:=get_posts_stateless(bot_public_key,NumToFetch=20):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
                     
                     for post in results["PostsFound"]:
+                        
                         last_post = post
                         if "TimestampNanos" in post:
                             logging.debug( f'Timestamp:{post["TimestampNanos"]}' )
@@ -766,7 +771,14 @@ def run():
                                     with open(image_save_path, 'wb') as handler:
                                         handler.write(image_data)
                                 else:
-                                    logging.info("Image already exists. Skipping download.")                              
+                                    logging.info("Image already exists. Skipping download.") 
+
+                                if(is_gif(image_save_path)):
+                                    logging.info("Image is GIF")
+                                    if(post["PostHashHex"] not in post_id_list_feed):
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                    continue                             
 
                                 category,sub, confidence = categorize_image_with_confidence(image_save_path,post_body)
 
