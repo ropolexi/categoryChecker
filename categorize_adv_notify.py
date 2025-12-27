@@ -86,8 +86,8 @@ client = DeSoDexClient(
     passphrase="",
     node_url=BASE_URL if REMOTE_API else local_domain
 )
-VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark"}
-ALLOWED = {"people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","girls","nsfw"}
+VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark","NFTzToken","MyDeSoSpace","CryptoWebDigger"}
+ALLOWED = {"people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","art","girls","nsfw"}
 ALLOWED_TYPES = {"image", "video"}
 
 def save_to_json(data, filename):
@@ -282,7 +282,7 @@ def spam_detect(username:str,body:str):
         "content contains loyalty and rewards, promotional offers, or advertisements that are not relevant to official DeSocialWorld or Focus.\n\n"
         "If there are loyalty rewards, promotional offers, or advertisements in the content, classify it as spam.\n"
         "If the username is similar to DeSocialWorld or Focus then they are spam\n"
-        "This is not spam do not label as spam if the content has something like this 🙏Congrats and thanks to all holders! Want to reward your NFT holders too? Start using nftz.me now.\n\n"
+        "Do not label as spam if the content has something like this '(Reward NFT holders  plan)  NFTs off the market'\n\n"
         "username: <<<"+username+">>>\n\n"
         "content: <<<"+body+">>>\n\n"
         "Rules:\n"
@@ -604,24 +604,39 @@ def run():
                 notificationListener()
                 logging.debug("Checking feed")
                 logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
-                if results:=get_posts_stateless(bot_public_key,NumToFetch=25):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
+                if results:=get_posts_stateless(bot_public_key,NumToFetch=20):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
                     
                     for post in results["PostsFound"]:
                         last_post = post
-                        logging.debug( f'Timestamp:{post["TimestampNanos"]}' )
-                        nano_ts=post["TimestampNanos"]
+                        if "TimestampNanos" in post:
+                            logging.debug( f'Timestamp:{post["TimestampNanos"]}' )
+                            nano_ts=post["TimestampNanos"]
+                        else:
+                            logging.debug("No TimestampNanos in post")
+                            continue
                         if nano_ts > max_nano_ts:
                             max_nano_ts = nano_ts
                         if nano_ts<=last_nano_tx:
                             logging.debug("Old feed")
-                            break
+                            break   #comment this line to process old posts when going back the feed
                         if post["PostHashHex"] not in post_id_list_feed:
                             ts=nano_ts/1e9
                             dt=datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
                             
                             
                             posts_count+=1
-                            post_username=post['ProfileEntryResponse']['Username'] if post['ProfileEntryResponse']['Username'] is not None else "unknown"
+                            post_username=None
+                            if "ProfileEntryResponse" in post:
+                               if post['ProfileEntryResponse'] is not None:
+                                   if "Username" in post['ProfileEntryResponse']:
+                                       if post['ProfileEntryResponse']['Username'] is not None:
+                                            post_username=post['ProfileEntryResponse']['Username']
+                            if post_username is None:
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                    logging.info("Skipping post with no username.")
+                                continue
                             post_body = unicodedata.normalize("NFKC", post["Body"])
                             post_body = post_body[:200] + "..." if len(post_body) > 200 else post_body
                             post_body=clean_text(post_body)
