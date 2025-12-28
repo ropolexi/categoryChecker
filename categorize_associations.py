@@ -55,6 +55,7 @@ process_images = True
 quote_post = True
 global_notify = True
 stats_calculate = True
+process_old_posts = False
 #---------------------------------------------------------
 
 model_name = "gemma3:12b"
@@ -697,7 +698,7 @@ def run():
                 notificationListener()
                 logging.debug("Checking feed")
                 logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
-                if results:=get_posts_stateless(bot_public_key,NumToFetch=250,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
+                if results:=get_posts_stateless(bot_public_key,NumToFetch=250 if process_old_posts else 20,PostHashHex=last_post["PostHashHex"] if (last_post!="" and process_old_posts) else ""):
                      
                     for post in results["PostsFound"]:
                         
@@ -712,7 +713,8 @@ def run():
                             max_nano_ts = nano_ts
                         if nano_ts<=last_nano_tx:
                             logging.debug("Old feed")
-                            #break   #comment this line to process old posts when going back the feed
+                            if not process_old_posts:
+                                break   
                         if post["PostHashHex"] not in post_id_list_feed:
                             ts=nano_ts/1e9
                             dt=datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
