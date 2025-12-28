@@ -47,11 +47,21 @@ img_path= base_dir / "img"
 img_path.mkdir(parents=True, exist_ok=True)
 stats={}
 
+# Posting and other Settings, update before running
+#---------------------------------------------------------
+text_detect_enable = True
+process_videos = True
+process_images = True
+quote_post = True
+global_notify = True
+stats_calculate = True
+#---------------------------------------------------------
+
 model_name = "gemma3:12b"
 BASE_URL = "https://node.deso.org"
 #local_domain="http://192.168.8.107:18001"
 local_domain="http://192.168.1.3:18001"
-REMOTE_API = True
+REMOTE_API = False
 HAS_LOCAL_NODE_WITH_INDEXING = False
 HAS_LOCAL_NODE_WITHOUT_INDEXING = True
 
@@ -60,7 +70,7 @@ local_url= local_domain +"/api/v0/"
 
 # Global variables for thread control
 calculation_thread = None
-update_time_interval=5
+update_time_interval=1
 last_run = datetime.datetime.now() - datetime.timedelta(minutes=6)
 notify_user_list={}
 post_id_list=[]
@@ -86,6 +96,7 @@ client = DeSoDexClient(
     passphrase="",
     node_url=BASE_URL if REMOTE_API else local_domain
 )
+SCAM_USERS={"DeSociaIWorIdRewards","FocusRewards","DeSocialWorIdValidator"}
 VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark","NFTzToken","MyDeSoSpace","CryptoWebDigger"}
 #ALLOWED = ["people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","art","girls","nsfw"]
 ALLOWED = [
@@ -154,30 +165,31 @@ def api_get(endpoint, payload=None):
         return None
 
 def create_quote_post(body,parent_post_hash_hex,category=[]):
-    logging.info("\n---- Submit Post ----")
-    try:
-        logging.info('Constructing submit-post txn...')
-        post_response = client.submit_post(
-            updater_public_key_base58check=bot_public_key,
-            body=body,
-            reposted_post_hash_hex=parent_post_hash_hex,
-            title="",
-            image_urls=[],
-            video_urls=[],
-            post_extra_data={"Node": "1","is_bot":"true","categories":json.dumps(category)},
-            min_fee_rate_nanos_per_kb=1000,
-            is_hidden=False,
-            in_tutorial=False
-        )
-        logging.info('Signing and submitting txn...')
-        submitted_txn_response = client.sign_and_submit_txn(post_response)
-        txn_hash = submitted_txn_response['TxnHashHex']
-        logging.debug(f"Txn Hash: {txn_hash}")
-        logging.info('SUCCESS!')
-        return 1
-    except Exception as e:
-        logging.error(f"ERROR: Submit post call failed: {e}")
-        return 0
+    if quote_post==True:
+        logging.info("\n---- Submit Quote Post ----")
+        try:
+            logging.info('Constructing submit-post txn...')
+            post_response = client.submit_post(
+                updater_public_key_base58check=bot_public_key,
+                body=body,
+                reposted_post_hash_hex=parent_post_hash_hex,
+                title="",
+                image_urls=[],
+                video_urls=[],
+                post_extra_data={"Node": "1","is_bot":"true","categories":json.dumps(category)},
+                min_fee_rate_nanos_per_kb=1000,
+                is_hidden=False,
+                in_tutorial=False
+            )
+            logging.info('Signing and submitting txn...')
+            submitted_txn_response = client.sign_and_submit_txn(post_response)
+            txn_hash = submitted_txn_response['TxnHashHex']
+            logging.debug(f"Txn Hash: {txn_hash}")
+            logging.info('SUCCESS!')
+            return 1
+        except Exception as e:
+            logging.error(f"ERROR: Submit post call failed: {e}")
+            return 0
     
 def create_post(body,parent_post_hash_hex,category=[]):
     logging.info("\n---- Submit Post ----")
@@ -197,6 +209,7 @@ def create_post(body,parent_post_hash_hex,category=[]):
         )
         logging.info('Signing and submitting txn...')
         submitted_txn_response = client.sign_and_submit_txn(post_response)
+        #client.wait_for_commitment_with_timeout(submitted_txn_response['TxnHashHex'], 5)
         txn_hash = submitted_txn_response['TxnHashHex']
         logging.debug(f"Txn Hash: {txn_hash}")
         logging.info('SUCCESS!')
@@ -275,7 +288,7 @@ def create_post_associations(TransactorPublicKeyBase58Check,PostHashHex,Associat
         post_response = api_get("post-associations/create", payload)
         logging.info('Signing and submitting txn...')
         submitted_txn_response = client.sign_and_submit_txn(post_response)
-        client.wait_for_commitment_with_timeout(submitted_txn_response['TxnHashHex'], 5)
+        #client.wait_for_commitment_with_timeout(submitted_txn_response['TxnHashHex'], 5)
         txn_hash = submitted_txn_response['TxnHashHex']
         logging.debug(f"Txn Hash: {txn_hash}")
         logging.info('SUCCESS!')
@@ -293,19 +306,18 @@ def categorize_image_with_confidence(image_path: str,text:str):
         "<<<" + text + ">>>\n\n"
         "Rules:\n"
         "- Choose ONE main category based on the most visually dominant subject.\n"
-        "- Category and subcategory MUST be from this list: " + allowed_str + "\n"
+        "- Category MUST be from this list: " + allowed_str + "\n"
         "- Subcategory should be more specific than category when possible."
         "- If no specific subcategory exists, set subcategory equal to category."
         "- If multiple objects exist, prioritize the primary subject."
         "- If the image depicts a human-created or intentionally designed representation (e.g., painting, illustration, sculpture, installation), classify it as \"art\" even if it represents nature."
         "- Classify as \"nature\" ONLY when the scene is a real, unaltered natural environment or subject."
         "- If the image contains readable words, signs, or documents, prefer \"text\"."
-        "- If the image contains explicit sexual content, use \"nsfw\"."
-        "- Confidence must be an integer from 0 to 100."
+        "- If the image contains explicit sexual content or nude art, use \"nsfw\"."
         "- Output ONLY valid JSON."
         "- Do NOT include explanations or extra text.\n\n"
         "Output format EXACTLY:\n"
-        "{\"category\":\"category\",\"subcategory\":\"subcategory\",\"confidence\":85}"
+        "{\"category\":\"category\",\"subcategory\":\"subcategory\"}"
 
     )
     logging.debug(prompt)
@@ -329,69 +341,75 @@ def categorize_image_with_confidence(image_path: str,text:str):
         logging.info(f"LLM Response Data: {data}")
         category = data["category"]
         subcategory = data["subcategory"]
-        confidence = int(data["confidence"])
 
         if category not in ALLOWED:
             category = ""
-            #raise ValueError("Invalid category")
-        if subcategory not in ALLOWED:
-            subcategory = ""
-            #raise ValueError("Invalid category")
 
-        confidence = max(0, min(confidence, 100))
-        return category,subcategory, confidence
+        return category,subcategory
 
     except Exception:
         # absolute fallback
         logging.error(response["message"]["content"])
-        return "", "",0
+        return "", ""
 
-def spam_detect(username:str,body:str):
-    prompt = (
-        "detect spam and fake accounts pretending to be DeSocialWorld or Focus.\n"
-        "Fake accounts often spell the username slightly wrong or use special characters to trick users. They may also post misleading content or links.\n"
-        "content contains loyalty and rewards, promotional offers, or advertisements that are not relevant to official DeSocialWorld or Focus.\n\n"
-        "If there are loyalty rewards, promotional offers, or advertisements in the content, classify it as spam.\n"
-        "If the username is similar to DeSocialWorld or Focus then they are spam\n"
-        "Do not label as spam if the content has something like this '(Reward NFT holders  plan)  NFTs off the market'\n\n"
-        "username: <<<"+username+">>>\n\n"
-        "content: <<<"+body+">>>\n\n"
-        "Rules:\n"
-        "- output ONLY valid JSON\n"
-        "- no extra text\n\n"
-        "Format exactly:\n"
-        "{\"spam\":\"No\"}"
 
-    )
-    logging.debug(prompt)
-    try:
-        response = ollama.chat(
-            model=model_name,
-            messages=[{
-                "role": "user",
-                "content": prompt
-            }],
-            format="json",
-            options={
-                "temperature": 0,
-                "format": "json"
-            }
+
+def text_category(body:str):
+    if text_detect_enable ==True:
+        logging.info("text clissification")   
+        prompt = (
+            "You are an automated text classification system.\n"
+            "Your task is to classify the following Twitter/X-style post into exactly ONE of the categories listed below.\n"
+            "\n"
+            "Categories:\n"
+            "- Scam – attempts to deceive users, phishing, fake giveaways, impersonation, crypto scams, suspicious links\n"
+            "- Advertisement – marketing, sponsored content, product or service promotion, affiliate links\n"
+            "- Politics – political parties, elections, politicians, public policy, government actions\n"
+            "- Information – factual reporting or sharing news without strong opinion\n"
+            "- Commentary – personal views or commentary not tied to marketing or scams\n"
+            "- Entertainment – movies, music, celebrities, memes, humor\n"
+            "- Technology – tech products, software, AI, gadgets\n"
+            "- Personal – everyday experiences or personal updates\n"
+            "- Other – does not clearly fit any category above\n"
+            "\n"
+            "Instructions:\n"
+            "- Consider hashtags, emojis, slang, shortened links, and informal language.\n"
+            "- Focus on the primary intent of the post.\n"
+            "- If multiple categories apply, select the most dominant one.\n"
+            "- Do not assume legitimacy; classify based only on text signals.\n"
+            "- Output only the category name and nothing else.\n"
+            "- If the post contains the exact phrase \"Airdrop Now Available\", classify it as Scam\n"
+            "- Do NOT classify a post as Scam  if it is clearly warning, advising, or cautioning users about scams (e.g., \"be careful\", \"do not click\", \"avoid links\", \"this is a scam\").\n"
+            "\n"
+            "Post:\n"
+            "\"" + body+ "\""
         )
+        logging.debug(prompt)
+        try:
+            response = ollama.chat(
+                model=model_name,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }],
+                format="json",
+                options={
+                    "temperature": 0,
+                    "format": "json"
+                }
+            )
 
-        data = json.loads(response["message"]["content"])
-        spam_detect = data["spam"]
-       
-        if spam_detect not in {"Yes","No"}:
-            spam_detect = "No"
+            data = json.loads(response["message"]["content"])
+            logging.info(f"LLM Response Data: {data}")
+            
 
-        if username in VALID_USERS:
-            spam_detect = "No"
-        
-        return spam_detect
+            return data["category"] if "category" in data else ""
 
-    except Exception:
-        # absolute fallback
-        logging.error(response["message"]["content"])
+        except Exception:
+            # absolute fallback
+            logging.error(response["message"]["content"])
+            return "No"
+    else:
         return "No"
 
 def extract_image_from_video_advance(url):
@@ -642,7 +660,7 @@ def extract_arweave_txid(url: str):
 
     return None
 def run():
-    global notify_user_list,post_id_list
+    global notify_user_list,post_id_list,process_videos
 
     max_nano_ts=0
     last_nano_tx=0
@@ -679,7 +697,7 @@ def run():
                 notificationListener()
                 logging.debug("Checking feed")
                 logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
-                if results:=get_posts_stateless(bot_public_key,NumToFetch=50):#,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
+                if results:=get_posts_stateless(bot_public_key,NumToFetch=250,PostHashHex=last_post["PostHashHex"] if last_post!="" else ""):
                      
                     for post in results["PostsFound"]:
                         
@@ -694,7 +712,7 @@ def run():
                             max_nano_ts = nano_ts
                         if nano_ts<=last_nano_tx:
                             logging.debug("Old feed")
-                            break   #comment this line to process old posts when going back the feed
+                            #break   #comment this line to process old posts when going back the feed
                         if post["PostHashHex"] not in post_id_list_feed:
                             ts=nano_ts/1e9
                             dt=datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
@@ -714,7 +732,7 @@ def run():
                                     logging.info("Skipping post with no username.")
                                 continue
                             post_body = unicodedata.normalize("NFKC", post["Body"])
-                            post_body = post_body[:200] + "..." if len(post_body) > 200 else post_body
+                            post_body = post_body[:500] + "..." if len(post_body) > 500 else post_body
                             post_body=clean_text(post_body)
                             logging.info(f"\n---- New Post #{posts_count} ----")
                             logging.info(f"Post Hash:{post['PostHashHex']}")
@@ -724,16 +742,48 @@ def run():
                             logging.info("=============Body==============")
                             logging.info(post_body)
                             logging.info("===============END=============")
+                            
                             if post['ProfileEntryResponse']["PublicKeyBase58Check"] == bot_public_key:
                                 logging.info("Skipping own post.")
                                 if post["PostHashHex"] not in post_id_list_feed:
                                     post_id_list_feed.append(post["PostHashHex"])
                                     save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                 continue
-                            spam = spam_detect(post_username,post_body)
-                            logging.info(f"Spam detect: {spam}")
-                            if spam=="Yes":
-                                logging.info("Skipping spam post.")
+
+                            if post_username in SCAM_USERS:
+                                logging.info("Skipping post from known scam user.")
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
+
+                            result = get_post_associations(post["PostHashHex"],"TOPIC","Scam")
+                            if len(result["Associations"])>0:
+                                logging.info("Skipping post already marked as Scam.")
+                                for assoc in result["Associations"]:
+                                    logging.info(f"AssociationID:{assoc}")
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
+                            result = post_associations_counts(post["PostHashHex"],"TOPIC",[])
+                            if result["Total"]>0:
+                                logging.info("Skipping post already categorized.")
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
+
+                            text_type=""
+                            if post_body!="":
+                                text_type = text_category(post_body)
+                                logging.info(f"Text category: {text_type}")
+                                
+                            if text_type!="":
+                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",text_type)
+                            
+                            if text_type=="Scam":
+                                logging.info("Skipping scam post.")
                                 if post['ProfileEntryResponse']["PublicKeyBase58Check"] not in spam_list:
                                     spam_list.append(post['ProfileEntryResponse']["PublicKeyBase58Check"])
                                     save_to_json(spam_list,"spam_list.json")
@@ -741,170 +791,180 @@ def run():
                                 save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                 continue
 
-                          
-                            if post["VideoURLs"]!=None and len(post["VideoURLs"])>0:
-                                video_url=post["VideoURLs"][0]
-                                logging.info(f"Video URL:{video_url}")
-                                if video_url!="":
-                                    image_file_name=None
-                                    retry_count=0
-                                    if is_html(video_url):
-                                        logging.info("Video URL is HTML")
-                                        while image_file_name is None and retry_count<=2:
-                                            image_file_name= extract_image_from_video_advance(video_url)
-                                            if image_file_name is None:
-                                                retry_count+=1
-                                                time.sleep(5)
-                                                if retry_count>2:
-                                                    logging.info("Skipping video post after 3 failed attempts.")
-                                                    logging.info("Failed to extract middle frame from video. Skipping post.")
-                                    else:
-                                        logging.info("Video URL is not HTML")
-                                        while image_file_name is None and retry_count<=2:
-                                            image_file_name= grab_frame_opencv(video_url)
-                                            if image_file_name is None:
-                                                retry_count+=1
-                                                time.sleep(5)
-                                                if retry_count>2:
-                                                    logging.error("Skipping video post after 3 failed attempts.")
-                                                    logging.error("Failed to extract middle frame from video. Skipping post.")
+                            if process_videos==True:
+                                if post["VideoURLs"]!=None and len(post["VideoURLs"])>0:
+                                    video_url=post["VideoURLs"][0]
+                                    logging.info(f"Video URL:{video_url}")
+                                    if video_url!="":
+                                        image_file_name=None
+                                        retry_count=0
+                                        if is_html(video_url):
+                                            logging.info("Video URL is HTML")
+                                            while image_file_name is None and retry_count<=2:
+                                                image_file_name= extract_image_from_video_advance(video_url)
+                                                if image_file_name is None:
+                                                    retry_count+=1
+                                                    time.sleep(5)
+                                                    if retry_count>2:
+                                                        logging.info("Skipping video post after 3 failed attempts.")
+                                                        logging.info("Failed to extract middle frame from video. Skipping post.")
+                                        else:
+                                            logging.info("Video URL is not HTML")
+                                            while image_file_name is None and retry_count<=2:
+                                                image_file_name= grab_frame_opencv(video_url)
+                                                if image_file_name is None:
+                                                    retry_count+=1
+                                                    time.sleep(5)
+                                                    if retry_count>2:
+                                                        logging.error("Skipping video post after 3 failed attempts.")
+                                                        logging.error("Failed to extract middle frame from video. Skipping post.")
 
-                                    post_id_list_feed.append(post["PostHashHex"])
-                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                    if image_file_name is None:
-                                        logging.error("Skipping post due to failed video extraction.")
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                        if image_file_name is None:
+                                            logging.error("Skipping post due to failed video extraction.")
+                                            continue
+                                        logging.info(f"Extracted image file from video: {image_file_name}")     
+                                        
+                                        category,sub = categorize_image_with_confidence(image_file_name,post_body)
+
+                                        if stats_calculate ==True:
+                                            if category!="":
+                                                stats_video[category]=stats_video.get(category,0)+1
+                                            if(category != sub):
+                                                if sub!="":
+                                                    stats_video[sub]=stats_video.get(sub,0)+1
+
+                                        save_to_json(stats_video,"stats_video.json")
+
+                                        logging.info(f"category: {category},Sub category: {sub}")
+
+
+                                        tags = {category, sub}  # set removes duplicates
+                                        reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
+                                        #create_post(reply_body,post["PostHashHex"],[category,sub])
+                                        if category=="nature" or sub=="nature":
+                                            create_quote_post(reply_body,post["PostHashHex"],[category,sub])
+                                        if category!="":
+                                            create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
+                                        if sub!="":
+                                            if category != sub:
+                                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
+                                        #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
+                                        #logging.info(f"Post associations counts: {result}")
+                                        users_list=[]
+                                        users_list = list(
+                                            set(notify_user_list.get("video", {}).get(category, [])) |
+                                            set(notify_user_list.get("video", {}).get(sub, []))
+                                        )
+
+                                        usernames_str=""
+                                        for user_public_key in users_list:
+                                            user = get_single_profile("",user_public_key)
+                                            if user != None and "Profile" in user:
+                                                if "Username" in user["Profile"]:
+                                                    if user["Profile"]["Username"] != None:
+                                                        if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
+                                                                usernames_str += "@"+user["Profile"]["Username"]+" "  
+                                        if usernames_str!="":
+                                            if global_notify==True:
+                                                create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
+                                        logging.debug(stats_video)
+                                        
+                                        logging.info("==============================")
+                            if process_images==True:
+                                if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
+                                    image_url=post["ImageURLs"][0]
+                                    logging.info(f"Image URL:{image_url}")
+
+                                    if is_gif_by_extension(image_url):
+                                        logging.info("Image is GIF")
+                                        if(post["PostHashHex"] not in post_id_list_feed):
+                                            post_id_list_feed.append(post["PostHashHex"])
+                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                         continue
-                                    logging.info(f"Extracted image file from video: {image_file_name}")     
+
+                                    if is_arweave_url(image_url):
+                                        arweave_txid = extract_arweave_txid(image_url)
+                                        if arweave_txid:
+                                            image_url = f"https://arweave.net/{arweave_txid}"
+                                            logging.info(f"Extracted Arweave URL: {image_url}")
+                                        else:
+                                            logging.info("Invalid Arweave URL.")
+                                            if(post["PostHashHex"] not in post_id_list_feed):
+                                                post_id_list_feed.append(post["PostHashHex"])
+                                                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                            continue
+                                    image_file_name= extract_image_url(image_url)
+                                    logging.debug(image_file_name)
+                                    image_save_path = img_path / image_file_name
+
+                                    if not image_save_path.exists():
+                                        logging.info("Image not found locally. Downloading...")
+                                        image_data = requests.get(image_url).content
+                                        with open(image_save_path, 'wb') as handler:
+                                            handler.write(image_data)
+                                    else:
+                                        logging.info("Image already exists. Skipping download.") 
+
+                                    if(is_gif(image_save_path)):
+                                        logging.info("Image is GIF")
+                                        if(post["PostHashHex"] not in post_id_list_feed):
+                                            post_id_list_feed.append(post["PostHashHex"])
+                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                        continue                             
+
+                                    category,sub = categorize_image_with_confidence(image_save_path,post_body)
+
+                                    if(post["PostHashHex"] not in post_id_list_feed):
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+
+                                    if stats_calculate ==True:
+                                        if category!="":
+                                            stats[category]=stats.get(category,0)+1
+                                        if(category != sub):
+                                            if sub!="":
+                                                stats[sub]=stats.get(sub,0)+1
+
+                                    save_to_json(stats,"stats.json")
+                                    logging.info(f"category: {category},Sub category: {sub}")
+
                                     
-                                    category,sub, confidence = categorize_image_with_confidence(image_file_name,post_body)
-
-                                    stats_video[category]=stats_video.get(category,0)+1
-                                    if(category != sub):
-                                        stats_video[sub]=stats_video.get(sub,0)+1
-
-                                    save_to_json(stats_video,"stats_video.json")
-
-                                    logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
-
-
                                     tags = {category, sub}  # set removes duplicates
                                     reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
                                     #create_post(reply_body,post["PostHashHex"],[category,sub])
-                                    create_quote_post(reply_body,post["PostHashHex"],[category,sub])
+                                    if category=="nature" or sub=="nature":
+                                        create_quote_post(reply_body,post["PostHashHex"],[category,sub])
                                     if category!="":
                                         create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
                                     if sub!="":
                                         if category != sub:
                                             create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
-                                    #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
-                                    #logging.info(f"Post associations counts: {result}")
+                                    result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
+                                    logging.info(f"Post associations counts: {result}")
                                     users_list=[]
                                     users_list = list(
-                                        set(notify_user_list.get("video", {}).get(category, [])) |
-                                        set(notify_user_list.get("video", {}).get(sub, []))
+                                        set(notify_user_list.get("image", {}).get(category, [])) |
+                                        set(notify_user_list.get("image", {}).get(sub, []))
                                     )
 
                                     usernames_str=""
+
                                     for user_public_key in users_list:
                                         user = get_single_profile("",user_public_key)
                                         if user != None and "Profile" in user:
                                             if "Username" in user["Profile"]:
                                                 if user["Profile"]["Username"] != None:
                                                     if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
-                                                            usernames_str += "@"+user["Profile"]["Username"]+" "  
+                                                        usernames_str += "@"+user["Profile"]["Username"]+" "  
                                     if usernames_str!="":
-                                        create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
-                                    logging.debug(stats_video)
+                                        if global_notify==True:
+                                            create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
+
+                                    logging.debug(stats)
                                     
                                     logging.info("==============================")
-
-                            if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
-                                image_url=post["ImageURLs"][0]
-                                logging.info(f"Image URL:{image_url}")
-
-                                if is_gif_by_extension(image_url):
-                                    logging.info("Image is GIF")
-                                    if(post["PostHashHex"] not in post_id_list_feed):
-                                        post_id_list_feed.append(post["PostHashHex"])
-                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                    continue
-
-                                if is_arweave_url(image_url):
-                                    arweave_txid = extract_arweave_txid(image_url)
-                                    if arweave_txid:
-                                        image_url = f"https://arweave.net/{arweave_txid}"
-                                        logging.info(f"Extracted Arweave URL: {image_url}")
-                                    else:
-                                        logging.info("Invalid Arweave URL.")
-                                        if(post["PostHashHex"] not in post_id_list_feed):
-                                            post_id_list_feed.append(post["PostHashHex"])
-                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                        continue
-                                image_file_name= extract_image_url(image_url)
-                                logging.debug(image_file_name)
-                                image_save_path = img_path / image_file_name
-
-                                if not image_save_path.exists():
-                                    logging.info("Image not found locally. Downloading...")
-                                    image_data = requests.get(image_url).content
-                                    with open(image_save_path, 'wb') as handler:
-                                        handler.write(image_data)
-                                else:
-                                    logging.info("Image already exists. Skipping download.") 
-
-                                if(is_gif(image_save_path)):
-                                    logging.info("Image is GIF")
-                                    if(post["PostHashHex"] not in post_id_list_feed):
-                                        post_id_list_feed.append(post["PostHashHex"])
-                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                    continue                             
-
-                                category,sub, confidence = categorize_image_with_confidence(image_save_path,post_body)
-
-                                if(post["PostHashHex"] not in post_id_list_feed):
-                                    post_id_list_feed.append(post["PostHashHex"])
-                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                
-                                stats[category]=stats.get(category,0)+1
-                                if(category != sub):
-                                    stats[sub]=stats.get(sub,0)+1
-
-                                save_to_json(stats,"stats.json")
-                                logging.info(f"category: {category},Sub category: {sub}, confidence: {confidence}%")
-
-                                
-                                tags = {category, sub}  # set removes duplicates
-                                reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
-                                #create_post(reply_body,post["PostHashHex"],[category,sub])
-                                create_quote_post(reply_body,post["PostHashHex"],[category,sub])
-                                if category!="":
-                                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
-                                if sub!="":
-                                    if category != sub:
-                                        create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
-                                #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
-                                #logging.info(f"Post associations counts: {result}")
-                                users_list=[]
-                                users_list = list(
-                                    set(notify_user_list.get("image", {}).get(category, [])) |
-                                    set(notify_user_list.get("image", {}).get(sub, []))
-                                )
-
-                                usernames_str=""
-
-                                for user_public_key in users_list:
-                                    user = get_single_profile("",user_public_key)
-                                    if user != None and "Profile" in user:
-                                        if "Username" in user["Profile"]:
-                                            if user["Profile"]["Username"] != None:
-                                                if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
-                                                    usernames_str += "@"+user["Profile"]["Username"]+" "  
-                                if usernames_str!="":
-                                    create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
-
-                                logging.debug(stats)
-                                
-                                logging.info("==============================")
 
                             if(post["PostHashHex"] not in post_id_list_feed):
                                 post_id_list_feed.append(post["PostHashHex"])
