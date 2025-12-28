@@ -326,15 +326,16 @@ def categorize_image_with_confidence(image_path: str,text:str):
 
     try:
         data = json.loads(response["message"]["content"])
+        logging.info(f"LLM Response Data: {data}")
         category = data["category"]
         subcategory = data["subcategory"]
         confidence = int(data["confidence"])
 
         if category not in ALLOWED:
-            category = "abstract"
+            category = ""
             #raise ValueError("Invalid category")
         if subcategory not in ALLOWED:
-            subcategory = "abstract"
+            subcategory = ""
             #raise ValueError("Invalid category")
 
         confidence = max(0, min(confidence, 100))
@@ -343,7 +344,7 @@ def categorize_image_with_confidence(image_path: str,text:str):
     except Exception:
         # absolute fallback
         logging.error(response["message"]["content"])
-        return "abstract", "abstract",0
+        return "", "",0
 
 def spam_detect(username:str,body:str):
     prompt = (
@@ -787,12 +788,14 @@ def run():
 
 
                                     tags = {category, sub}  # set removes duplicates
-                                    reply_body = "categories: " + " ".join(f"#{t}" for t in tags)
+                                    reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
                                     #create_post(reply_body,post["PostHashHex"],[category,sub])
                                     create_quote_post(reply_body,post["PostHashHex"],[category,sub])
-                                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
-                                    if category != sub:
-                                        create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
+                                    if category!="":
+                                        create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
+                                    if sub!="":
+                                        if category != sub:
+                                            create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
                                     #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
                                     #logging.info(f"Post associations counts: {result}")
                                     users_list=[]
@@ -871,12 +874,14 @@ def run():
 
                                 
                                 tags = {category, sub}  # set removes duplicates
-                                reply_body = "categories: " + " ".join(f"#{t}" for t in tags)
+                                reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
                                 #create_post(reply_body,post["PostHashHex"],[category,sub])
                                 create_quote_post(reply_body,post["PostHashHex"],[category,sub])
-                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
-                                if category != sub:
-                                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
+                                if category!="":
+                                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
+                                if sub!="":
+                                    if category != sub:
+                                        create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
                                 #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
                                 #logging.info(f"Post associations counts: {result}")
                                 users_list=[]
