@@ -752,12 +752,7 @@ def run():
                                     save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                 continue
 
-                            if post_username in SCAM_USERS:
-                                logging.info("Skipping post from known scam user.")
-                                if post["PostHashHex"] not in post_id_list_feed:
-                                    post_id_list_feed.append(post["PostHashHex"])
-                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                continue
+                            
 
                             result = get_post_associations(post["PostHashHex"],"TOPIC","Scam")
                             if len(result["Associations"])>0:
@@ -774,6 +769,14 @@ def run():
                                 if post["PostHashHex"] not in post_id_list_feed:
                                     post_id_list_feed.append(post["PostHashHex"])
                                     save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                continue
+
+                            if post_username in SCAM_USERS:
+                                logging.info("Skipping post from known scam user.")
+                                if post["PostHashHex"] not in post_id_list_feed:
+                                    post_id_list_feed.append(post["PostHashHex"])
+                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC","Scam")
                                 continue
 
                             text_type=""
