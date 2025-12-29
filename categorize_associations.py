@@ -409,9 +409,9 @@ def text_category(body:str):
         except Exception:
             # absolute fallback
             logging.error(response["message"]["content"])
-            return "No"
+            return ""
     else:
-        return "No"
+        return ""
 
 def extract_image_from_video_advance(url):
     try:
