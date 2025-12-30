@@ -52,9 +52,10 @@ stats={}
 text_detect_enable = True
 process_videos = True
 process_images = True
-quote_post = True
+quote_post = False
 global_notify = True
 stats_calculate = True
+stats_text_calculate = True
 process_old_posts = False
 #---------------------------------------------------------
 
@@ -71,7 +72,7 @@ local_url= local_domain +"/api/v0/"
 
 # Global variables for thread control
 calculation_thread = None
-update_time_interval=1
+update_time_interval=1 if process_old_posts else 5
 last_run = datetime.datetime.now() - datetime.timedelta(minutes=6)
 notify_user_list={}
 post_id_list=[]
@@ -98,7 +99,7 @@ client = DeSoDexClient(
     node_url=BASE_URL if REMOTE_API else local_domain
 )
 SCAM_USERS={"DeSociaIWorIdRewards","FocusRewards","DeSocialWorIdValidator"}
-VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark","NFTzToken","MyDeSoSpace","CryptoWebDigger"}
+VALID_USERS={"mcmarsh","CategoryChecker","Arnoud","DeSocialWorld","Exotica_S","WhaleDShark","NFTzToken","MyDeSoSpace","CryptoWebDigger","AlexOnChain"}
 #ALLOWED = ["people", "nature", "abstract","food" ,"technology" ,"animals","christmas","text","vehicles","sports","celebrations","gardening","electronics","trading","art","girls","nsfw"]
 ALLOWED = [
   "people",
@@ -306,6 +307,7 @@ def categorize_image_with_confidence(image_path: str,text:str):
         "Image description or user text about the image:\n"
         "<<<" + text + ">>>\n\n"
         "Rules:\n"
+        "- Give more priority to image than the Image description.\n"
         "- Choose ONE main category based on the most visually dominant subject.\n"
         "- Category MUST be from this list: " + allowed_str + "\n"
         "- Subcategory should be more specific than category when possible."
@@ -523,22 +525,27 @@ def get_single_post(post_hash_hex, reader_public_key=None, fetch_parents=False, 
     return data["PostFound"] if "PostFound" in data else None
 
 def extract_category_and_subject(text):
-    pattern = r"@CategoryChecker (notify|stop) (\w+) (\w+)"
+    pattern = r"@categorychecker (notify|stop) (\w+) (\w+)"
 
-    match = re.match(pattern, text)
-
+    match = re.match(pattern, text, re.IGNORECASE)
+    category_type=""
+    category=""
+    command=""
     if match:
         command = match.group(1)  # "notify" or "stop"
         category_type = match.group(2)
         category = match.group(3)
 
-        if category_type not in ALLOWED_TYPES or category not in ALLOWED:
+        if category_type not in ALLOWED_TYPES:
+            logging.error(f"category_type:{category_type},category: {category},command: {command}")
             return None  # Invalid category or type
 
         status = command  # Status is "notify" or "stop"
+        logging.info(f"category_type:{category_type},category: {category},command: {command}")
 
         return {"category_type":category_type,"category": category,"status": status}
     else:
+        logging.error(f"category_type:{category_type},category: {category},command: {command}")
         return None
 
   
@@ -552,62 +559,68 @@ def notificationListener():
     if now - last_run >= datetime.timedelta(minutes=2):
         last_run = now  
         logging.info("Checking notifications")
-
-        result=get_notifications(profile["Profile"]["PublicKeyBase58Check"],NumToFetch=20,FilteredOutNotificationCategories={"dao coin":True,"user association":True, "post association":True,"post":False,"dao":True,"nft":True,"follow":True,"like":True,"diamond":True,"transfer":True})
-        for notification in result["Notifications"]:
-            for affectedkeys in notification["Metadata"]["AffectedPublicKeys"]:
-                if affectedkeys["Metadata"]=="MentionedPublicKeyBase58Check":
-                    if affectedkeys["PublicKeyBase58Check"]==profile["Profile"]["PublicKeyBase58Check"]:
-                        postId=notification["Metadata"]["SubmitPostTxindexMetadata"]["PostHashBeingModifiedHex"]
-                        if postId in post_id_list:
-                            break
-                        else:
-                            post_id_list.append(postId)
-                            save_to_json({"post_ids":post_id_list},"postIdList_thread.json")
-                            logging.info(postId)
-                            transactor=notification["Metadata"]["TransactorPublicKeyBase58Check"]
-                            r=get_single_profile("",transactor)
-                            if r is None:
-                                break
-                            username= r["Profile"]["Username"]
-                            mentioned_post = get_single_post(postId,bot_public_key)
-                            body=mentioned_post["Body"]
-                        
-                            logging.debug(f"username: {username}")
-                            logging.debug(f"transactor: {transactor}")
-                            logging.debug(f"body:\n{body}") 
-                            status_res=extract_category_and_subject(body)
-                            if status_res is None:
-                                logging.debug("No valid notify command found or invalid category/type")
+        i=0
+        currentIndex=-1
+        while i<2:
+            i +=1 
+            result=get_notifications(profile["Profile"]["PublicKeyBase58Check"],NumToFetch=20,FetchStartIndex=currentIndex,FilteredOutNotificationCategories={"dao coin":True,"user association":True, "post association":True,"post":False,"dao":True,"nft":True,"follow":True,"like":True,"diamond":True,"transfer":True})
+            for notification in result["Notifications"]:
+                currentIndex = notification["Index"]
+                logging.info(f"currentIndex:{currentIndex}")
+                for affectedkeys in notification["Metadata"]["AffectedPublicKeys"]:
+                    if affectedkeys["Metadata"]=="MentionedPublicKeyBase58Check":
+                        if affectedkeys["PublicKeyBase58Check"]==profile["Profile"]["PublicKeyBase58Check"]:
+                            postId=notification["Metadata"]["SubmitPostTxindexMetadata"]["PostHashBeingModifiedHex"]
+                            if postId in post_id_list:
                                 break
                             else:
-                                command=status_res["status"]
-                                if command=="notify":
-                                    logging.info("Notify command found")
-                                    category_type=status_res["category_type"]
-                                    category=status_res["category"]
-                                    logging.info(f"Notify command found: type:{category_type}, category:{category}")
-                                    notify_user_list[category_type]=notify_user_list.get(category_type,{})
-                                    notify_user_list[category_type][category]=notify_user_list[category_type].get(category,[])
-                                    if transactor not in notify_user_list[category_type][category]:
-                                        notify_user_list[category_type][category].append(transactor)
-                                        save_to_json(notify_user_list,"notify_user_list.json")
-                                        create_post(f"@{username} You will be notified for {category_type} category: {category}.",postId)
-                                    else:
-                                        create_post(f"@{username} You are already set to be notified for {category_type} category: {category}.",postId)
-                                elif command=="stop":
-                                    logging.info("Stop command found")
-                                    category_type=status_res["category_type"]
-                                    category=status_res["category"]
-                                    logging.info(f"Stop command found: type:{category_type}, category:{category}")
-                                    if category_type in notify_user_list:
-                                        if category in notify_user_list[category_type]:
-                                            if transactor in notify_user_list[category_type][category]:
-                                                notify_user_list[category_type][category].remove(transactor)
-                                                save_to_json(notify_user_list,"notify_user_list.json")
-                                                create_post(f"@{username} You will NOT be notified for {category_type} category: {category}.",postId)
+                                post_id_list.append(postId)
+                                save_to_json({"post_ids":post_id_list},"postIdList_thread.json")
+                                logging.info(postId)
+                                transactor=notification["Metadata"]["TransactorPublicKeyBase58Check"]
+                                r=get_single_profile("",transactor)
+                                if r is None:
+                                    break
+                                username= r["Profile"]["Username"]
+                                mentioned_post = get_single_post(postId,bot_public_key)
+                                body=mentioned_post["Body"]
+                            
+                                logging.debug(f"username: {username}")
+                                logging.debug(f"transactor: {transactor}")
+                                logging.debug(f"body:\n{body}") 
+                                status_res=extract_category_and_subject(body)
+                                if status_res is None:
+                                    logging.info("No valid notify command found or invalid category/type")
+                                    #create_post(f"No valid notify command found or invalid category/type",postId)
+                                    break
+                                else:
+                                    command=status_res["status"]
+                                    if command=="notify":
+                                        logging.info("Notify command found")
+                                        category_type=status_res["category_type"]
+                                        category=status_res["category"]
+                                        logging.info(f"Notify command found: type:{category_type}, category:{category}")
+                                        notify_user_list[category_type]=notify_user_list.get(category_type,{})
+                                        notify_user_list[category_type][category]=notify_user_list[category_type].get(category,[])
+                                        if transactor not in notify_user_list[category_type][category]:
+                                            notify_user_list[category_type][category].append(transactor)
+                                            save_to_json(notify_user_list,"notify_user_list.json")
+                                            create_post(f"@{username} You will be notified for {category_type} category: {category}.",postId)
+                                        else:
+                                            create_post(f"@{username} You are already set to be notified for {category_type} category: {category}.",postId)
+                                    elif command=="stop":
+                                        logging.info("Stop command found")
+                                        category_type=status_res["category_type"]
+                                        category=status_res["category"]
+                                        logging.info(f"Stop command found: type:{category_type}, category:{category}")
+                                        if category_type in notify_user_list:
+                                            if category in notify_user_list[category_type]:
+                                                if transactor in notify_user_list[category_type][category]:
+                                                    notify_user_list[category_type][category].remove(transactor)
+                                                    save_to_json(notify_user_list,"notify_user_list.json")
+                                                    create_post(f"@{username} You will NOT be notified for {category_type} category: {category}.",postId)
 
-                            break
+                                break
         logging.info("Checked notifications done.")
 
        
@@ -671,6 +684,7 @@ def run():
     posts_count=0
     last_run_report = datetime.datetime.now()# - datetime.timedelta(hours=12)
     stats_video={}
+    stats_text={}
     stats={}
     last_post=""
     crashes_count=0
@@ -688,6 +702,8 @@ def run():
                 stats=result
             if result:=load_from_json("stats_video.json"):
                 stats_video=result
+            if result:=load_from_json("stats_text.json"):
+                stats_text=result
 
             if result:=load_from_json("postIdList_thread.json"):
                 post_id_list=result["post_ids"]
@@ -698,7 +714,7 @@ def run():
                 notificationListener()
                 logging.debug("Checking feed")
                 logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
-                if results:=get_posts_stateless(bot_public_key,NumToFetch=250 if process_old_posts else 20,PostHashHex=last_post["PostHashHex"] if (last_post!="" and process_old_posts) else ""):
+                if results:=get_posts_stateless(bot_public_key,NumToFetch=250 if process_old_posts else 50,PostHashHex=last_post["PostHashHex"] if (last_post!="" and process_old_posts) else ""):
                      
                     for post in results["PostsFound"]:
                         
@@ -738,7 +754,7 @@ def run():
                             post_body=clean_text(post_body)
                             logging.info(f"\n---- New Post #{posts_count} ----")
                             logging.info(f"Post Hash:{post['PostHashHex']}")
-                            logging.debug(f"UTC Time:{dt}")
+                            logging.info(f"UTC Time:{dt}")
                             logging.info(f"Username:{post_username}")
                             logging.info(f'PublicKeyBase58Check:{post['ProfileEntryResponse']["PublicKeyBase58Check"]}')
                             logging.info("=============Body==============")
@@ -783,9 +799,16 @@ def run():
                             if post_body!="":
                                 text_type = text_category(post_body)
                                 logging.info(f"Text category: {text_type}")
+                                if stats_text_calculate ==True:
+                                    if text_type!="":
+                                        stats_text[text_type]=stats_text.get(text_type,0)+1
+                                        save_to_json(stats_text,"stats_text.json")
                                 
                             if text_type!="":
-                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",text_type)
+                                if text_type=="Scam" and post_username in VALID_USERS:
+                                    logging.info("valid user, not scam")
+                                else:
+                                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",text_type)
                             
                             if text_type=="Scam":
                                 logging.info("Skipping scam post.")
@@ -978,6 +1001,12 @@ def run():
                         last_nano_tx=max_nano_ts
                 
                 info_body="✍️ Category Checker Service Status\n"
+
+                sorted_stats_text = sorted(stats_text.items(), key=lambda item: item[1], reverse=True)
+                info_body += "\n🖼️ Text Category Stats:\n"
+                for key, value in sorted_stats_text:  # This is the crucial change: tuple unpacking
+                    info_body += f"* {key}: {value}\n"
+                info_body += f"Total Text processed: {sum(stats_text.values())}\n"
 
                 sorted_stats = sorted(stats.items(), key=lambda item: item[1], reverse=True)
                 info_body += "\n🖼️ Image Category Stats:\n"
