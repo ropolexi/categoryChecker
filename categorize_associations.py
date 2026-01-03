@@ -45,24 +45,28 @@ seed_phrase_or_hex="" #dont share this
 base_dir = Path.cwd()
 img_path= base_dir / "img"
 img_path.mkdir(parents=True, exist_ok=True)
-stats={}
 
+stats_video={}
+stats_text={}
+stats={}
+post_id_list_feed=[]
 # Posting and other Settings, update before running
 #---------------------------------------------------------
 text_detect_enable = True
 process_videos = True
 process_images = True
-quote_post = False
+quote_post = True
 global_notify = True
 stats_calculate = True
 stats_text_calculate = True
 process_old_posts = False
+reprocess_scams = False
 #---------------------------------------------------------
 
 model_name = "gemma3:12b"
 BASE_URL = "https://node.deso.org"
 #local_domain="http://192.168.8.107:18001"
-local_domain="http://192.168.1.3:18001"
+local_domain="http://192.168.10.3:18001"
 REMOTE_API = False
 HAS_LOCAL_NODE_WITH_INDEXING = False
 HAS_LOCAL_NODE_WITHOUT_INDEXING = True
@@ -73,7 +77,7 @@ local_url= local_domain +"/api/v0/"
 # Global variables for thread control
 calculation_thread = None
 update_time_interval=1 if process_old_posts else 5
-last_run = datetime.datetime.now() - datetime.timedelta(minutes=6)
+last_run = datetime.datetime.now() - datetime.timedelta(minutes=10)
 notify_user_list={}
 post_id_list=[]
 if REMOTE_API:
@@ -116,7 +120,7 @@ ALLOWED = [
   "nsfw"
 ]
 
-ALLOWED_TYPES = {"image", "video"}
+ALLOWED_TYPES = {"image", "video","text"}
 
 def save_to_json(data, filename):
   try:
@@ -153,7 +157,7 @@ def api_get(endpoint, payload=None):
             if HAS_LOCAL_NODE_WITHOUT_INDEXING:
                 if endpoint=="get-notifications":
                     logging.debug("---Using remote node---")
-                    response = requests.post(api_url + endpoint, json=payload)
+                    response = requests.post(api_url + endpoint, json=payload,timeout=5)
                     logging.debug("--------End------------")
                 else:
                     response = requests.post(local_url + endpoint, json=payload)
@@ -263,7 +267,30 @@ def post_associations_counts(post_hash,AssociationType,AssociationValues):
     data = api_get("post-associations/counts", payload)
     return data
 
-def get_post_associations(post_hash, AssociationType,AssociationValue):
+def delete_post_associations(TransactorPublicKeyBase58Check,AssociationID,ExtraData={}):
+    try:
+        logging.info('Constructing delete_post_associations txn...')
+        payload = {
+        "TransactorPublicKeyBase58Check": TransactorPublicKeyBase58Check,
+        "AssociationID": AssociationID,
+        "ExtraData": ExtraData,
+        "MinFeeRateNanosPerKB": 1000
+        }
+        logging.info(f'Payload: {payload}')
+        post_response = api_get("post-associations/delete", payload)
+        logging.info('Signing and submitting txn...')
+        submitted_txn_response = client.sign_and_submit_txn(post_response)
+        #client.wait_for_commitment_with_timeout(submitted_txn_response['TxnHashHex'], 5)
+        txn_hash = submitted_txn_response['TxnHashHex']
+        logging.debug(f"Txn Hash: {txn_hash}")
+        logging.info('SUCCESS!')
+        
+        return 1  
+    except Exception as e:
+        logging.error(f"ERROR: Submit post call failed: {e}")
+        return 0
+    
+def get_post_associations(post_hash, AssociationType,AssociationValue=""):
     payload = {
         "AssociationType": AssociationType,
         "AssociationValue": AssociationValue,
@@ -286,7 +313,7 @@ def create_post_associations(TransactorPublicKeyBase58Check,PostHashHex,Associat
         "ExtraData": ExtraData,
         "MinFeeRateNanosPerKB": 1000
         }
-        logging.info(f'Payload: {payload}')
+        logging.debug(f'Payload: {payload}')
         post_response = api_get("post-associations/create", payload)
         logging.info('Signing and submitting txn...')
         submitted_txn_response = client.sign_and_submit_txn(post_response)
@@ -383,6 +410,7 @@ def text_category(body:str):
             "- Output only the category name and nothing else.\n"
             "- If the post contains the exact phrase \"Airdrop Now Available\", classify it as Scam\n"
             "- Do NOT classify a post as Scam  if it is clearly warning, advising, or cautioning users about scams (e.g., \"be careful\", \"do not click\", \"avoid links\", \"this is a scam\").\n"
+            "- If text contains nftz.me/nft/<something>, classify it as NFT\n"
             "\n"
             "Post:\n"
             "\"" + body+ "\""
@@ -536,7 +564,7 @@ def extract_category_and_subject(text):
         category_type = match.group(2)
         category = match.group(3)
 
-        if category_type not in ALLOWED_TYPES:
+        if category_type not in ALLOWED_TYPES or category=="" or command=="":
             logging.error(f"category_type:{category_type},category: {category},command: {command}")
             return None  # Invalid category or type
 
@@ -549,79 +577,7 @@ def extract_category_and_subject(text):
         return None
 
   
-def notificationListener():
-    global last_run,notify_user_list,post_id_list
 
-    profile=get_single_profile("",bot_public_key)
- 
-    now = datetime.datetime.now() 
-    logging.debug(now)
-    if now - last_run >= datetime.timedelta(minutes=2):
-        last_run = now  
-        logging.info("Checking notifications")
-        i=0
-        currentIndex=-1
-        while i<2:
-            i +=1 
-            result=get_notifications(profile["Profile"]["PublicKeyBase58Check"],NumToFetch=20,FetchStartIndex=currentIndex,FilteredOutNotificationCategories={"dao coin":True,"user association":True, "post association":True,"post":False,"dao":True,"nft":True,"follow":True,"like":True,"diamond":True,"transfer":True})
-            for notification in result["Notifications"]:
-                currentIndex = notification["Index"]
-                logging.info(f"currentIndex:{currentIndex}")
-                for affectedkeys in notification["Metadata"]["AffectedPublicKeys"]:
-                    if affectedkeys["Metadata"]=="MentionedPublicKeyBase58Check":
-                        if affectedkeys["PublicKeyBase58Check"]==profile["Profile"]["PublicKeyBase58Check"]:
-                            postId=notification["Metadata"]["SubmitPostTxindexMetadata"]["PostHashBeingModifiedHex"]
-                            if postId in post_id_list:
-                                break
-                            else:
-                                post_id_list.append(postId)
-                                save_to_json({"post_ids":post_id_list},"postIdList_thread.json")
-                                logging.info(postId)
-                                transactor=notification["Metadata"]["TransactorPublicKeyBase58Check"]
-                                r=get_single_profile("",transactor)
-                                if r is None:
-                                    break
-                                username= r["Profile"]["Username"]
-                                mentioned_post = get_single_post(postId,bot_public_key)
-                                body=mentioned_post["Body"]
-                            
-                                logging.debug(f"username: {username}")
-                                logging.debug(f"transactor: {transactor}")
-                                logging.debug(f"body:\n{body}") 
-                                status_res=extract_category_and_subject(body)
-                                if status_res is None:
-                                    logging.info("No valid notify command found or invalid category/type")
-                                    #create_post(f"No valid notify command found or invalid category/type",postId)
-                                    break
-                                else:
-                                    command=status_res["status"]
-                                    if command=="notify":
-                                        logging.info("Notify command found")
-                                        category_type=status_res["category_type"]
-                                        category=status_res["category"]
-                                        logging.info(f"Notify command found: type:{category_type}, category:{category}")
-                                        notify_user_list[category_type]=notify_user_list.get(category_type,{})
-                                        notify_user_list[category_type][category]=notify_user_list[category_type].get(category,[])
-                                        if transactor not in notify_user_list[category_type][category]:
-                                            notify_user_list[category_type][category].append(transactor)
-                                            save_to_json(notify_user_list,"notify_user_list.json")
-                                            create_post(f"@{username} You will be notified for {category_type} category: {category}.",postId)
-                                        else:
-                                            create_post(f"@{username} You are already set to be notified for {category_type} category: {category}.",postId)
-                                    elif command=="stop":
-                                        logging.info("Stop command found")
-                                        category_type=status_res["category_type"]
-                                        category=status_res["category"]
-                                        logging.info(f"Stop command found: type:{category_type}, category:{category}")
-                                        if category_type in notify_user_list:
-                                            if category in notify_user_list[category_type]:
-                                                if transactor in notify_user_list[category_type][category]:
-                                                    notify_user_list[category_type][category].remove(transactor)
-                                                    save_to_json(notify_user_list,"notify_user_list.json")
-                                                    create_post(f"@{username} You will NOT be notified for {category_type} category: {category}.",postId)
-
-                                break
-        logging.info("Checked notifications done.")
 
        
 def clean_text(text):
@@ -673,20 +629,352 @@ def extract_arweave_txid(url: str):
         return txid
 
     return None
+
+def idenitfy_video(post,post_username,post_body,post_id_list_feed,stats_video):
+    if post["VideoURLs"]!=None and len(post["VideoURLs"])>0:
+        video_url=post["VideoURLs"][0]
+        logging.info(f"Video URL:{video_url}")
+        if video_url!="":
+            image_file_name=None
+            retry_count=0
+            if is_html(video_url):
+                logging.info("Video URL is HTML")
+                while image_file_name is None and retry_count<=2:
+                    image_file_name= extract_image_from_video_advance(video_url)
+                    if image_file_name is None:
+                        retry_count+=1
+                        time.sleep(5)
+                        if retry_count>2:
+                            logging.info("Skipping video post after 3 failed attempts.")
+                            logging.info("Failed to extract middle frame from video. Skipping post.")
+            else:
+                logging.info("Video URL is not HTML")
+                while image_file_name is None and retry_count<=2:
+                    image_file_name= grab_frame_opencv(video_url)
+                    if image_file_name is None:
+                        retry_count+=1
+                        time.sleep(5)
+                        if retry_count>2:
+                            logging.error("Skipping video post after 3 failed attempts.")
+                            logging.error("Failed to extract middle frame from video. Skipping post.")
+
+            post_id_list_feed.append(post["PostHashHex"])
+            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+            if image_file_name is None:
+                logging.error("Skipping post due to failed video extraction.")
+                return None
+            logging.info(f"Extracted image file from video: {image_file_name}")     
+            
+            category,sub = categorize_image_with_confidence(image_file_name,post_body)
+
+            if stats_calculate ==True:
+                if category!="":
+                    stats_video[category]=stats_video.get(category,0)+1
+                if(category != sub):
+                    if sub!="":
+                        stats_video[sub]=stats_video.get(sub,0)+1
+
+            save_to_json(stats_video,"stats_video.json")
+
+            logging.info(f"category: {category},Sub category: {sub}")
+
+
+            tags = {category, sub}  # set removes duplicates
+            reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
+            #create_post(reply_body,post["PostHashHex"],[category,sub])
+            if category=="nature" or sub=="nature":
+                pass
+                #create_quote_post(reply_body,post["PostHashHex"],[category,sub])
+            if category!="":
+                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
+            if sub!="":
+                if category != sub:
+                    create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
+            #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
+            #logging.info(f"Post associations counts: {result}")
+            users_list=[]
+            users_list = list(
+                set(notify_user_list.get("video", {}).get(category, [])) |
+                set(notify_user_list.get("video", {}).get(sub, []))
+            )
+
+            usernames_str=""
+            for user_public_key in users_list:
+                user = get_single_profile("",user_public_key)
+                if user != None and "Profile" in user:
+                    if "Username" in user["Profile"]:
+                        if user["Profile"]["Username"] != None:
+                            if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
+                                    usernames_str += "@"+user["Profile"]["Username"]+" "  
+            if usernames_str!="":
+                if global_notify==True:
+                    create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
+            logging.debug(stats_video)
+            
+            logging.info("==============================")
+def identify_image(post,post_username,post_body,post_id_list_feed,stats):
+    if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
+        image_url=post["ImageURLs"][0]
+        logging.info(f"Image URL:{image_url}")
+
+        if is_gif_by_extension(image_url):
+            logging.info("Image is GIF")
+            if(post["PostHashHex"] not in post_id_list_feed):
+                post_id_list_feed.append(post["PostHashHex"])
+                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+            return None
+
+        if is_arweave_url(image_url):
+            arweave_txid = extract_arweave_txid(image_url)
+            if arweave_txid:
+                image_url = f"https://arweave.net/{arweave_txid}"
+                logging.info(f"Extracted Arweave URL: {image_url}")
+            else:
+                logging.info("Invalid Arweave URL.")
+                if(post["PostHashHex"] not in post_id_list_feed):
+                    post_id_list_feed.append(post["PostHashHex"])
+                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                return None
+        image_file_name= extract_image_url(image_url)
+        logging.debug(image_file_name)
+        image_save_path = img_path / image_file_name
+
+        if not image_save_path.exists():
+            logging.info("Image not found locally. Downloading...")
+            image_data = requests.get(image_url).content
+            with open(image_save_path, 'wb') as handler:
+                handler.write(image_data)
+        else:
+            logging.info("Image already exists. Skipping download.") 
+
+        if(is_gif(image_save_path)):
+            logging.info("Image is GIF")
+            if(post["PostHashHex"] not in post_id_list_feed):
+                post_id_list_feed.append(post["PostHashHex"])
+                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+            return None                             
+
+        category,sub = categorize_image_with_confidence(image_save_path,post_body)
+
+        if(post["PostHashHex"] not in post_id_list_feed):
+            post_id_list_feed.append(post["PostHashHex"])
+            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+
+        if stats_calculate ==True:
+            if category!="":
+                stats[category]=stats.get(category,0)+1
+            if(category != sub):
+                if sub!="":
+                    stats[sub]=stats.get(sub,0)+1
+
+        save_to_json(stats,"stats.json")
+        logging.info(f"category: {category},Sub category: {sub}")
+
+        
+        tags = {category, sub}  # set removes duplicates
+        reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
+        #create_post(reply_body,post["PostHashHex"],[category,sub])
+        if category=="nature" or sub=="nature":
+            pass
+            #create_quote_post(reply_body,post["PostHashHex"],[category,sub])
+        if category!="":
+            create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
+        if sub!="":
+            if category != sub:
+                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
+        result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
+        logging.info(f"Post associations counts: {result}")
+        users_list=[]
+        users_list = list(
+            set(notify_user_list.get("image", {}).get(category, [])) |
+            set(notify_user_list.get("image", {}).get(sub, []))
+        )
+
+        usernames_str=""
+
+        for user_public_key in users_list:
+            user = get_single_profile("",user_public_key)
+            if user != None and "Profile" in user:
+                if "Username" in user["Profile"]:
+                    if user["Profile"]["Username"] != None:
+                        if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
+                            usernames_str += "@"+user["Profile"]["Username"]+" "  
+        if usernames_str!="":
+            if global_notify==True:
+                create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
+
+        logging.debug(stats)
+        
+        logging.info("==============================")
+
+def identify_text(post,post_username,post_body,stats_text):
+    text_type=""
+    if post_body!="":
+        text_type = text_category(post_body)
+        logging.info(f"Text category: {text_type}")
+        if stats_text_calculate ==True:
+            if text_type!="":
+                stats_text[text_type]=stats_text.get(text_type,0)+1
+                save_to_json(stats_text,"stats_text.json")
+        if(text_type!=""):
+            users_list=[]
+            users_list = list(
+                set(notify_user_list.get("text", {}).get(text_type.lower(), []))
+            )
+
+            usernames_str=""
+            for user_public_key in users_list:
+                user = get_single_profile("",user_public_key)
+                if user != None and "Profile" in user:
+                    if "Username" in user["Profile"]:
+                        if user["Profile"]["Username"] != None:
+                            if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
+                                    usernames_str += "@"+user["Profile"]["Username"]+" "  
+            if usernames_str!="":
+                if global_notify==True:
+                    create_post(f"{usernames_str} Check out this interesting text post by {post_username}, categories: {text_type}",post["PostHashHex"])        
+            logging.debug(stats_text)
+            
+            logging.info("==============================")
+    return text_type
+
+def notificationListener():
+    global last_run,notify_user_list,post_id_list
+
+    profile=get_single_profile("",bot_public_key)
+ 
+    now = datetime.datetime.now() 
+    logging.debug(now)
+    if now - last_run >= datetime.timedelta(minutes=5):
+        last_run = now  
+        logging.info("Checking notifications")
+        i=0
+        currentIndex=-1
+        while i<1:
+            i +=1 
+            result=get_notifications(profile["Profile"]["PublicKeyBase58Check"],NumToFetch=20,FetchStartIndex=currentIndex,FilteredOutNotificationCategories={"dao coin":True,"user association":True, "post association":True,"post":False,"dao":True,"nft":True,"follow":True,"like":True,"diamond":True,"transfer":True})
+            for notification in result["Notifications"]:
+                currentIndex = notification["Index"]
+                logging.info(f"currentIndex:{currentIndex}")
+                for affectedkeys in notification["Metadata"]["AffectedPublicKeys"]:
+                    if affectedkeys["Metadata"]=="MentionedPublicKeyBase58Check":
+                        if affectedkeys["PublicKeyBase58Check"]==profile["Profile"]["PublicKeyBase58Check"]:
+                            postId=notification["Metadata"]["SubmitPostTxindexMetadata"]["PostHashBeingModifiedHex"]
+                            if postId in post_id_list:
+                                break
+                            else:
+                                post_id_list.append(postId)
+                                save_to_json({"post_ids":post_id_list},"postIdList_thread.json")
+                                logging.info(postId)
+                                transactor=notification["Metadata"]["TransactorPublicKeyBase58Check"]
+                                r=get_single_profile("",transactor)
+                                if r is None:
+                                    break
+                                username= r["Profile"]["Username"]
+                                mentioned_post = get_single_post(postId,bot_public_key)
+                                body=mentioned_post["Body"]
+                            
+                                logging.debug(f"username: {username}")
+                                logging.debug(f"transactor: {transactor}")
+                                logging.debug(f"body:\n{body}") 
+                                status_res=extract_category_and_subject(body)
+                                if status_res is None:
+                                    logging.info("No valid notify command found or invalid category/type")
+                                    #create_post(f"No valid notify command found or invalid category/type",postId)
+
+                                    parent_post = [{"test":1}]
+                                    logging.info("Start check parent post=>")
+                                    parent_post_id = postId
+                                    while len(parent_post)>0:
+                                        post_result=get_single_post(parent_post_id, transactor, fetch_parents=True)
+                                        parent_post=post_result["ParentPosts"]
+                                        if len(parent_post)>0:
+                                            parent_post_id = parent_post[0]["PostHashHex"]
+                                    
+                                    post_username=None
+                                    if "ProfileEntryResponse" in post_result:
+                                        if post_result['ProfileEntryResponse'] is not None:
+                                            if "Username" in post_result['ProfileEntryResponse']:
+                                                if post_result['ProfileEntryResponse']['Username'] is not None:
+                                                        post_username=post_result['ProfileEntryResponse']['Username']
+
+                                    post_body = unicodedata.normalize("NFKC", post_result["Body"])
+                                    post_body = post_body[:500] + "..." if len(post_body) > 500 else post_body
+                                    post_body=clean_text(post_body)
+                                    logging.info(parent_post_id)
+                                    logging.info(f"Post username: {post_username}")
+                                    logging.info(f"Post body: {post_body}")
+
+                                    text_type = identify_text(post_result,post_username,post_body,stats_text)
+                                
+                                    if text_type!="":
+                                        if text_type=="Scam" and post_username in VALID_USERS:
+                                            logging.info("valid user, not scam")
+                                        else:
+                                            create_post_associations(bot_public_key,post_result["PostHashHex"],"TOPIC",text_type)
+
+                                    if process_videos==True:
+                                        idenitfy_video(post_result,post_username,post_body,post_id_list_feed,stats_video)
+                                        
+                                    if process_images==True:
+                                        identify_image(post_result,post_username,post_body,post_id_list_feed,stats)
+
+                                    result = get_post_associations(parent_post_id,"TOPIC")
+                                    if len(result["Associations"])>0:
+                                        cat_str=""
+                                        for value in result["Associations"]:
+                                            text_type=value["AssociationValue"]
+                                            logging.info(text_type)
+                                            if text_type !="" and text_type !="Scam":
+                                                cat_str += " #"+ text_type.lower()
+                                        if cat_str !="":
+                                            logging.info(f"Creating quote post with categories:{cat_str}")
+                                            create_quote_post(cat_str,parent_post_id)
+                                        
+                                else:
+                                    command=status_res["status"]
+                                    if command=="notify":
+                                        logging.info("Notify command found")
+                                        category_type=status_res["category_type"]
+                                        category=status_res.get("category", "").lower()
+                                        logging.info(f"Notify command found: type:{category_type}, category:{category}")
+                                        notify_user_list[category_type]=notify_user_list.get(category_type,{})
+                                        notify_user_list[category_type][category]=notify_user_list[category_type].get(category,[])
+                                        if transactor not in notify_user_list[category_type][category]:
+                                            notify_user_list[category_type][category].append(transactor)
+                                            save_to_json(notify_user_list,"notify_user_list.json")
+                                            create_post(f"@{username} You will be notified for {category_type} category: {category}.",postId)
+                                        else:
+                                            create_post(f"@{username} You are already set to be notified for {category_type} category: {category}.",postId)
+                                    elif command=="stop":
+                                        logging.info("Stop command found")
+                                        category_type=status_res["category_type"]
+                                        category=status_res["category"]
+                                        logging.info(f"Stop command found: type:{category_type}, category:{category}")
+                                        if category_type in notify_user_list:
+                                            if category in notify_user_list[category_type]:
+                                                if transactor in notify_user_list[category_type][category]:
+                                                    notify_user_list[category_type][category].remove(transactor)
+                                                    save_to_json(notify_user_list,"notify_user_list.json")
+                                                    create_post(f"@{username} You will NOT be notified for {category_type} category: {category}.",postId)
+
+                                break
+        logging.info("Checked notifications done.")
+
+           
 def run():
     global notify_user_list,post_id_list,process_videos
 
     max_nano_ts=0
     last_nano_tx=0
     nano_ts=0
-    post_id_list_feed=[]
+    
   
     posts_count=0
     last_run_report = datetime.datetime.now()# - datetime.timedelta(hours=12)
-    stats_video={}
-    stats_text={}
-    stats={}
+
     last_post=""
+    #last_post={"PostHashHex":"9ac58fdf54f282b325f393f3e52472a432ffdff785402cb24aa12c668734c2e1"}
     crashes_count=0
     post = None
     spam_list=[]
@@ -711,7 +999,8 @@ def run():
                 notify_user_list=result
             
             while(True):
-                notificationListener()
+                if not process_old_posts:
+                    notificationListener()
                 logging.debug("Checking feed")
                 logging.debug(f'Last Post Hash:{last_post["PostHashHex"] if last_post!="" else "First run, no last post"}' )
                 if results:=get_posts_stateless(bot_public_key,NumToFetch=250 if process_old_posts else 50,PostHashHex=last_post["PostHashHex"] if (last_post!="" and process_old_posts) else ""):
@@ -769,23 +1058,24 @@ def run():
                                 continue
 
                             
-
-                            result = get_post_associations(post["PostHashHex"],"TOPIC","Scam")
-                            if len(result["Associations"])>0:
-                                logging.info("Skipping post already marked as Scam.")
-                                for assoc in result["Associations"]:
-                                    logging.info(f"AssociationID:{assoc}")
-                                if post["PostHashHex"] not in post_id_list_feed:
-                                    post_id_list_feed.append(post["PostHashHex"])
-                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                continue
-                            result = post_associations_counts(post["PostHashHex"],"TOPIC",[])
-                            if result["Total"]>0:
-                                logging.info("Skipping post already categorized.")
-                                if post["PostHashHex"] not in post_id_list_feed:
-                                    post_id_list_feed.append(post["PostHashHex"])
-                                    save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                continue
+                            if not reprocess_scams:
+                                result = get_post_associations(post["PostHashHex"],"TOPIC","Scam")
+                                if len(result["Associations"])>0:
+                                    logging.info("Skipping post already marked as Scam.")
+                                    # for assoc in result["Associations"]:
+                                    #     logging.info(f"AssociationID:{assoc}")
+                                    if post["PostHashHex"] not in post_id_list_feed:
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                    continue
+                            if not reprocess_scams:
+                                result = post_associations_counts(post["PostHashHex"],"TOPIC",[])
+                                if result["Total"]>0:
+                                    logging.info("Skipping post already categorized.")
+                                    if post["PostHashHex"] not in post_id_list_feed:
+                                        post_id_list_feed.append(post["PostHashHex"])
+                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
+                                    continue
 
                             if post_username in SCAM_USERS:
                                 logging.info("Skipping post from known scam user.")
@@ -793,16 +1083,11 @@ def run():
                                     post_id_list_feed.append(post["PostHashHex"])
                                     save_to_json(post_id_list_feed,"postIdList_LIKE.json")
                                 create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC","Scam")
+                                stats_text["Scam"]=stats_text.get("Scam",0)+1
+                                save_to_json(stats_text,"stats_text.json")
                                 continue
 
-                            text_type=""
-                            if post_body!="":
-                                text_type = text_category(post_body)
-                                logging.info(f"Text category: {text_type}")
-                                if stats_text_calculate ==True:
-                                    if text_type!="":
-                                        stats_text[text_type]=stats_text.get(text_type,0)+1
-                                        save_to_json(stats_text,"stats_text.json")
+                            text_type = identify_text(post,post_username,post_body,stats_text)
                                 
                             if text_type!="":
                                 if text_type=="Scam" and post_username in VALID_USERS:
@@ -820,179 +1105,11 @@ def run():
                                 continue
 
                             if process_videos==True:
-                                if post["VideoURLs"]!=None and len(post["VideoURLs"])>0:
-                                    video_url=post["VideoURLs"][0]
-                                    logging.info(f"Video URL:{video_url}")
-                                    if video_url!="":
-                                        image_file_name=None
-                                        retry_count=0
-                                        if is_html(video_url):
-                                            logging.info("Video URL is HTML")
-                                            while image_file_name is None and retry_count<=2:
-                                                image_file_name= extract_image_from_video_advance(video_url)
-                                                if image_file_name is None:
-                                                    retry_count+=1
-                                                    time.sleep(5)
-                                                    if retry_count>2:
-                                                        logging.info("Skipping video post after 3 failed attempts.")
-                                                        logging.info("Failed to extract middle frame from video. Skipping post.")
-                                        else:
-                                            logging.info("Video URL is not HTML")
-                                            while image_file_name is None and retry_count<=2:
-                                                image_file_name= grab_frame_opencv(video_url)
-                                                if image_file_name is None:
-                                                    retry_count+=1
-                                                    time.sleep(5)
-                                                    if retry_count>2:
-                                                        logging.error("Skipping video post after 3 failed attempts.")
-                                                        logging.error("Failed to extract middle frame from video. Skipping post.")
-
-                                        post_id_list_feed.append(post["PostHashHex"])
-                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                        if image_file_name is None:
-                                            logging.error("Skipping post due to failed video extraction.")
-                                            continue
-                                        logging.info(f"Extracted image file from video: {image_file_name}")     
-                                        
-                                        category,sub = categorize_image_with_confidence(image_file_name,post_body)
-
-                                        if stats_calculate ==True:
-                                            if category!="":
-                                                stats_video[category]=stats_video.get(category,0)+1
-                                            if(category != sub):
-                                                if sub!="":
-                                                    stats_video[sub]=stats_video.get(sub,0)+1
-
-                                        save_to_json(stats_video,"stats_video.json")
-
-                                        logging.info(f"category: {category},Sub category: {sub}")
-
-
-                                        tags = {category, sub}  # set removes duplicates
-                                        reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
-                                        #create_post(reply_body,post["PostHashHex"],[category,sub])
-                                        if category=="nature" or sub=="nature":
-                                            create_quote_post(reply_body,post["PostHashHex"],[category,sub])
-                                        if category!="":
-                                            create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
-                                        if sub!="":
-                                            if category != sub:
-                                                create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
-                                        #result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
-                                        #logging.info(f"Post associations counts: {result}")
-                                        users_list=[]
-                                        users_list = list(
-                                            set(notify_user_list.get("video", {}).get(category, [])) |
-                                            set(notify_user_list.get("video", {}).get(sub, []))
-                                        )
-
-                                        usernames_str=""
-                                        for user_public_key in users_list:
-                                            user = get_single_profile("",user_public_key)
-                                            if user != None and "Profile" in user:
-                                                if "Username" in user["Profile"]:
-                                                    if user["Profile"]["Username"] != None:
-                                                        if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
-                                                                usernames_str += "@"+user["Profile"]["Username"]+" "  
-                                        if usernames_str!="":
-                                            if global_notify==True:
-                                                create_post(f"{usernames_str} Check out this interesting video post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])        
-                                        logging.debug(stats_video)
-                                        
-                                        logging.info("==============================")
+                                idenitfy_video(post,post_username,post_body,post_id_list_feed,stats_video)
+                                
                             if process_images==True:
-                                if post["ImageURLs"]!=None and len(post["ImageURLs"])>0:
-                                    image_url=post["ImageURLs"][0]
-                                    logging.info(f"Image URL:{image_url}")
-
-                                    if is_gif_by_extension(image_url):
-                                        logging.info("Image is GIF")
-                                        if(post["PostHashHex"] not in post_id_list_feed):
-                                            post_id_list_feed.append(post["PostHashHex"])
-                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                        continue
-
-                                    if is_arweave_url(image_url):
-                                        arweave_txid = extract_arweave_txid(image_url)
-                                        if arweave_txid:
-                                            image_url = f"https://arweave.net/{arweave_txid}"
-                                            logging.info(f"Extracted Arweave URL: {image_url}")
-                                        else:
-                                            logging.info("Invalid Arweave URL.")
-                                            if(post["PostHashHex"] not in post_id_list_feed):
-                                                post_id_list_feed.append(post["PostHashHex"])
-                                                save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                            continue
-                                    image_file_name= extract_image_url(image_url)
-                                    logging.debug(image_file_name)
-                                    image_save_path = img_path / image_file_name
-
-                                    if not image_save_path.exists():
-                                        logging.info("Image not found locally. Downloading...")
-                                        image_data = requests.get(image_url).content
-                                        with open(image_save_path, 'wb') as handler:
-                                            handler.write(image_data)
-                                    else:
-                                        logging.info("Image already exists. Skipping download.") 
-
-                                    if(is_gif(image_save_path)):
-                                        logging.info("Image is GIF")
-                                        if(post["PostHashHex"] not in post_id_list_feed):
-                                            post_id_list_feed.append(post["PostHashHex"])
-                                            save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-                                        continue                             
-
-                                    category,sub = categorize_image_with_confidence(image_save_path,post_body)
-
-                                    if(post["PostHashHex"] not in post_id_list_feed):
-                                        post_id_list_feed.append(post["PostHashHex"])
-                                        save_to_json(post_id_list_feed,"postIdList_LIKE.json")
-
-                                    if stats_calculate ==True:
-                                        if category!="":
-                                            stats[category]=stats.get(category,0)+1
-                                        if(category != sub):
-                                            if sub!="":
-                                                stats[sub]=stats.get(sub,0)+1
-
-                                    save_to_json(stats,"stats.json")
-                                    logging.info(f"category: {category},Sub category: {sub}")
-
-                                    
-                                    tags = {category, sub}  # set removes duplicates
-                                    reply_body = "categories: " + " ".join(f"#{t}" for t in tags if t)
-                                    #create_post(reply_body,post["PostHashHex"],[category,sub])
-                                    if category=="nature" or sub=="nature":
-                                        create_quote_post(reply_body,post["PostHashHex"],[category,sub])
-                                    if category!="":
-                                        create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",category)
-                                    if sub!="":
-                                        if category != sub:
-                                            create_post_associations(bot_public_key,post["PostHashHex"],"TOPIC",sub)
-                                    result = post_associations_counts(post["PostHashHex"],"TOPIC",ALLOWED)
-                                    logging.info(f"Post associations counts: {result}")
-                                    users_list=[]
-                                    users_list = list(
-                                        set(notify_user_list.get("image", {}).get(category, [])) |
-                                        set(notify_user_list.get("image", {}).get(sub, []))
-                                    )
-
-                                    usernames_str=""
-
-                                    for user_public_key in users_list:
-                                        user = get_single_profile("",user_public_key)
-                                        if user != None and "Profile" in user:
-                                            if "Username" in user["Profile"]:
-                                                if user["Profile"]["Username"] != None:
-                                                    if post['ProfileEntryResponse']["PublicKeyBase58Check"]!=user_public_key:
-                                                        usernames_str += "@"+user["Profile"]["Username"]+" "  
-                                    if usernames_str!="":
-                                        if global_notify==True:
-                                            create_post(f"{usernames_str} Check out this interesting image post by {post_username}, categories: {category}, {sub}",post["PostHashHex"])      
-
-                                    logging.debug(stats)
-                                    
-                                    logging.info("==============================")
+                                identify_image(post,post_username,post_body,post_id_list_feed,stats)
+                                
 
                             if(post["PostHashHex"] not in post_id_list_feed):
                                 post_id_list_feed.append(post["PostHashHex"])
